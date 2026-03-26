@@ -1,4 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import {
   HealthCheckService,
   TypeOrmHealthIndicator,
@@ -9,6 +10,7 @@ import {
 } from '@nestjs/terminus';
 import { StellarService } from '../stellar/stellar.service';
 
+@ApiTags('Health')
 @Controller('health')
 export class HealthController {
   constructor(
@@ -19,6 +21,9 @@ export class HealthController {
 
   @Get()
   @HealthCheck()
+  @ApiOperation({ summary: 'Liveness check', description: 'Public. Checks internal services status (DB, Stellar connectivity).' })
+  @ApiResponse({ status: 200, description: 'All systems operational' })
+  @ApiResponse({ status: 503, description: 'Service unavailable' })
   check(): Promise<HealthCheckResult> {
     return this.health.check([
       () => this.db.pingCheck('database', { timeout: 3000 }),

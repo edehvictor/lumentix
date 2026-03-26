@@ -12,7 +12,15 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
+import {
+  ApiTags,
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+} from '@nestjs/swagger';
 import { EventsService } from './events.service';
 import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
@@ -21,53 +29,77 @@ import { Roles, Role } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
+import { TicketsService } from '../tickets/tickets.service';
+import { Event } from './entities/event.entity';
 
+@ApiTags('Events')
+@ApiBearerAuth()
 @Controller('events')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class EventsController {
-  constructor(private readonly eventsService: EventsService) {}
+  constructor(
+    private readonly eventsService: EventsService,
+    @Inject(forwardRef(() => TicketsService))
+    private readonly ticketsService: TicketsService,
+  ) {}
 
   @Post()
   @Roles(Role.ORGANIZER)
+  @ApiOperation({ summary: 'Create a new event', description: 'Organizer-only. Creates a DRAFT event.' })
+  @ApiResponse({ status: 201, description: 'Event created', type: Event })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 403, description: 'Not an organizer' })
   create(@Body() dto: CreateEventDto, @Req() req: AuthenticatedRequest) {
     return this.eventsService.createEvent(dto, req.user.id);
   }
 
   @Get()
+  @ApiOperation({ summary: 'List all events', description: 'Supports filtering by status, date, and category.' })
+  @ApiResponse({ status: 200, description: 'List of events', type: [Event] })
   list(@Query() filterDto: ListEventsDto) {
     return this.eventsService.listEvents(filterDto);
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'Get an event by ID', description: 'Retrieves full details of a specific event.' })
+  @ApiResponse({ status: 200, description: 'Event found', type: Event })
+  @ApiResponse({ status: 404, description: 'Event not found' })
   getById(@Param('id', ParseUUIDPipe) id: string) {
     return this.eventsService.getEventById(id);
   }
 
   @Put(':id')
   @Roles(Role.ORGANIZER)
+  @ApiOperation({ summary: 'Update an event', description: 'Organizer-only. Allows updating event details.' })
+  @ApiResponse({ status: 200, description: 'Event updated', type: Event })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  @ApiResponse({ status: 404, description: 'Event not found' })
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateEventDto,
-    @Req() req: AuthenticatedRequest, // ← add
+    @Req() req: AuthenticatedRequest,
   ) {
-    return this.eventsService.updateEvent(id, dto, req.user.id); // ← pass callerId
+    return this.eventsService.updateEvent(id, dto, req.user.id);
   }
 
   @Delete(':id')
   @Roles(Role.ORGANIZER)
   @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete an event', description: 'Organizer-only. Soft deletes an event if no tickets sold.' })
+  @ApiResponse({ status: 204, description: 'Event deleted' })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  @ApiResponse({ status: 404, description: 'Event not found' })
   delete(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: AuthenticatedRequest,
   ) {
-    return this.eventsService.deleteEvent(id, req.user.id); // ← pass callerId
+    return this.eventsService.deleteEvent(id, req.user.id);
   }
-  /**
-   * GET /events/:eventId/tickets
-   * Organizer can list tickets for their event.
-   */
+
   @Get(':eventId/tickets')
   @Roles(Role.ORGANIZER)
+  @ApiOperation({ summary: 'Get event tickets', description: 'Organizer-only. Lists all tickets sold for the event.' })
+  @ApiResponse({ status: 200, description: 'Tickets list' })
   async getEventTickets(
     @Param('eventId', ParseUUIDPipe) eventId: string,
     @Req() req: AuthenticatedRequest,
@@ -76,12 +108,10 @@ export class EventsController {
     return this.ticketsService.findByEvent(eventId, req.user.id, paginationDto);
   }
 
-  /**
-   * GET /events/:eventId/tickets/summary
-   * Organizer can get ticket stats for their event.
-   */
   @Get(':eventId/tickets/summary')
   @Roles(Role.ORGANIZER)
+  @ApiOperation({ summary: 'Get ticket summary', description: 'Organizer-only. Statistics on ticket sales.' })
+  @ApiResponse({ status: 200, description: 'Ticket stats' })
   async getTicketSummary(
     @Param('eventId', ParseUUIDPipe) eventId: string,
     @Req() req: AuthenticatedRequest,

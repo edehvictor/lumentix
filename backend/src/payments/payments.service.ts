@@ -5,6 +5,8 @@ import {
   Logger,
   NotFoundException,
   ForbiddenException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -25,6 +27,7 @@ export interface PaymentIntent {
   amount: number;
   currency: string;
   memo: string;
+  expiresAt: string | Date;
 }
 
 @Injectable()
@@ -35,6 +38,7 @@ export class PaymentsService {
   constructor(
     @InjectRepository(Payment)
     private readonly paymentsRepository: Repository<Payment>,
+    @Inject(forwardRef(() => EventsService))
     private readonly eventsService: EventsService,
     private readonly stellarService: StellarService,
     private readonly auditService: AuditService,
@@ -116,12 +120,15 @@ export class PaymentsService {
 
     const now = new Date();
     // TTL config
-    const ttlMinutes = this.configService.get<number>('PAYMENT_INTENT_TTL_MINUTES') ?? 30;
+    const ttlMinutes =
+      this.configService.get<number>('PAYMENT_INTENT_TTL_MINUTES') ?? 30;
     const expiresAt = new Date(now.getTime() + ttlMinutes * 60_000);
 
     if (existing) {
       if (existing.expiresAt && existing.expiresAt > now) {
-        this.logger.log(`Returning existing payment intent: paymentId=${existing.id}`);
+        this.logger.log(
+          `Returning existing payment intent: paymentId=${existing.id}`,
+        );
         return {
           paymentId: existing.id,
           escrowWallet: this.escrowWallet,
@@ -134,7 +141,9 @@ export class PaymentsService {
         // Expired intent, mark as failed
         existing.status = PaymentStatus.FAILED;
         await this.paymentsRepository.save(existing);
-        this.logger.log(`Expired payment intent marked as FAILED: paymentId=${existing.id}`);
+        this.logger.log(
+          `Expired payment intent marked as FAILED: paymentId=${existing.id}`,
+        );
       }
     }
 
@@ -153,11 +162,16 @@ export class PaymentsService {
       action: 'PAYMENT_INTENT_CREATED',
       userId,
       resourceId: saved.id,
-      meta: { eventId, amount: saved.amount, currency: saved.currency, expiresAt: saved.expiresAt },
+      meta: {
+        eventId,
+        amount: saved.amount,
+        currency: saved.currency,
+        expiresAt: saved.expiresAt,
+      },
     });
 
     this.logger.log(
-      `Payment intent created: paymentId=${saved.id} event=${eventId} user=${userId} expiresAt=${saved.expiresAt.toISOString()}`,
+      `Payment intent created: paymentId=${saved.id} event=${eventId} user=${userId} expiresAt=${saved.expiresAt?.toISOString() ?? 'n/a'}`,
     );
 
     return {
@@ -166,7 +180,7 @@ export class PaymentsService {
       amount: event.ticketPrice,
       currency,
       memo: saved.id,
-      expiresAt: saved.expiresAt.toISOString(),
+      expiresAt: saved.expiresAt?.toISOString() ?? expiresAt.toISOString(),
     };
   }
 
@@ -197,7 +211,6 @@ export class PaymentsService {
       );
     }
 
-
     const payment = await this.paymentsRepository.findOne({
       where: { id: memoValue, status: PaymentStatus.PENDING },
     });
@@ -218,7 +231,9 @@ export class PaymentsService {
         resourceId: payment.id,
         meta: { eventId: payment.eventId, expiresAt: payment.expiresAt },
       });
-      throw new BadRequestException('Payment intent has expired. Please create a new payment intent.');
+      throw new BadRequestException(
+        'Payment intent has expired. Please create a new payment intent.',
+      );
     }
 
     // ── Ownership check ──────────────────────────────────────────────────────

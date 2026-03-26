@@ -1,73 +1,16 @@
-      async findByEvent(eventId: string, requesterId: string, paginationDto: any) {
-        // Ownership check
-        const event = await this.eventRepo.findOne({ where: { id: eventId } });
-        if (!event) throw new NotFoundException('Event not found');
-        if (event.organizerId !== requesterId) {
-          throw new ForbiddenException('You are not the organizer of this event.');
-        }
-        const queryBuilder = this.ticketRepo.createQueryBuilder('ticket')
-          .where('ticket.eventId = :eventId', { eventId });
-        // Optional status filter
-        if (paginationDto.status) {
-          queryBuilder.andWhere('ticket.status = :status', { status: paginationDto.status });
-        }
-        const { paginate } = await import('../common/pagination/pagination.helper');
-        return paginate(queryBuilder, paginationDto, 'ticket');
-      }
-
-      async getEventTicketSummary(eventId: string, requesterId: string) {
-        // Ownership check
-        const event = await this.eventRepo.findOne({ where: { id: eventId } });
-        if (!event) throw new NotFoundException('Event not found');
-        if (event.organizerId !== requesterId) {
-          throw new ForbiddenException('You are not the organizer of this event.');
-        }
-        const stats = await this.ticketRepo.createQueryBuilder('t')
-          .select('t.status', 'status')
-          .addSelect('COUNT(*)', 'count')
-          .where('t.eventId = :eventId', { eventId })
-          .groupBy('t.status')
-          .getRawMany();
-        const summary = { total: 0, valid: 0, used: 0, refunded: 0 };
-        for (const row of stats) {
-          summary[row.status] = Number(row.count);
-          summary.total += Number(row.count);
-        }
-        return summary;
-      }
-    async findOne(id: string, requesterId: string): Promise<TicketEntity> {
-      const ticket = await this.ticketRepo.findOne({ where: { id } });
-      if (!ticket) throw new NotFoundException('Ticket not found');
-      // Role check: Only owner, admin, or organizer of event can access
-      // For now, only owner allowed; extend as needed
-      if (ticket.ownerId !== requesterId) {
-        throw new ForbiddenException('You do not own this ticket.');
-      }
-      return ticket;
-    }
-  async findByOwner(ownerId: string, paginationDto: any) {
-    const queryBuilder = this.ticketRepo.createQueryBuilder('ticket')
-      .where('ticket.ownerId = :ownerId', { ownerId })
-      .orderBy('ticket.createdAt', 'DESC');
-    // Use paginate helper
-    // If you have a PaginationDto type, replace 'any' above
-    const { paginate } = await import('../common/pagination/pagination.helper');
-    return paginate(queryBuilder, paginationDto, 'ticket');
-  }
-import * as qrcode from 'qrcode';
-import { TicketSigningService } from './ticket-signing.service';
-import { IssueTicketResponseDto } from './dto/issue-ticket-response.dto';
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
-  InternalServerErrorException,
   NotFoundException,
   UnauthorizedException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import * as qrcode from 'qrcode';
 
 import { TicketEntity } from './entities/ticket.entity';
 import { PaymentsService } from '../payments/payments.service';
@@ -76,12 +19,15 @@ import { StellarService } from '../stellar/stellar.service';
 import { NotificationService } from '../notifications/notification.service';
 import { Event } from '../events/entities/event.entity';
 import { User } from '../users/entities/user.entity';
+import { TicketSigningService } from './ticket-signing.service';
+import { IssueTicketResponseDto } from './dto/issue-ticket-response.dto';
 
 @Injectable()
 export class TicketsService {
   constructor(
     @InjectRepository(TicketEntity)
     private readonly ticketRepo: Repository<TicketEntity>,
+    @Inject(forwardRef(() => PaymentsService))
     private readonly paymentsService: PaymentsService,
     private readonly stellarService: StellarService,
     private readonly configService: ConfigService,
@@ -92,6 +38,70 @@ export class TicketsService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
   ) {}
+
+  async findByEvent(eventId: string, requesterId: string, paginationDto: any) {
+    // Ownership check
+    const event = await this.eventRepo.findOne({ where: { id: eventId } });
+    if (!event) throw new NotFoundException('Event not found');
+    if (event.organizerId !== requesterId) {
+      throw new ForbiddenException('You are not the organizer of this event.');
+    }
+    const queryBuilder = this.ticketRepo
+      .createQueryBuilder('ticket')
+      .where('ticket.eventId = :eventId', { eventId });
+
+    // Optional status filter
+    if (paginationDto.status) {
+      queryBuilder.andWhere('ticket.status = :status', {
+        status: paginationDto.status,
+      });
+    }
+    const { paginate } = await import('../common/pagination/pagination.helper');
+    return paginate(queryBuilder, paginationDto, 'ticket');
+  }
+
+  async getEventTicketSummary(eventId: string, requesterId: string) {
+    // Ownership check
+    const event = await this.eventRepo.findOne({ where: { id: eventId } });
+    if (!event) throw new NotFoundException('Event not found');
+    if (event.organizerId !== requesterId) {
+      throw new ForbiddenException('You are not the organizer of this event.');
+    }
+    const stats = await this.ticketRepo
+      .createQueryBuilder('t')
+      .select('t.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .where('t.eventId = :eventId', { eventId })
+      .groupBy('t.status')
+      .getRawMany();
+
+    const summary = { total: 0, valid: 0, used: 0, refunded: 0 };
+    for (const row of stats) {
+      summary[row.status] = Number(row.count);
+      summary.total += Number(row.count);
+    }
+    return summary;
+  }
+
+  async findOne(id: string, requesterId: string): Promise<TicketEntity> {
+    const ticket = await this.ticketRepo.findOne({ where: { id } });
+    if (!ticket) throw new NotFoundException('Ticket not found');
+    // Role check: Only owner, admin, or organizer of event can access
+    if (ticket.ownerId !== requesterId) {
+      throw new ForbiddenException('You do not own this ticket.');
+    }
+    return ticket;
+  }
+
+  async findByOwner(ownerId: string, paginationDto: any) {
+    const queryBuilder = this.ticketRepo
+      .createQueryBuilder('ticket')
+      .where('ticket.ownerId = :ownerId', { ownerId })
+      .orderBy('ticket.createdAt', 'DESC');
+
+    const { paginate } = await import('../common/pagination/pagination.helper');
+    return paginate(queryBuilder, paginationDto, 'ticket');
+  }
 
   async issueTicket(paymentId: string): Promise<IssueTicketResponseDto> {
     const payment = await this.paymentsService.getPaymentById(paymentId);
@@ -214,6 +224,4 @@ export class TicketsService {
     ticket.status = 'used';
     return this.ticketRepo.save(ticket);
   }
-
-  // Private helpers removed; now handled by TicketSigningService
 }

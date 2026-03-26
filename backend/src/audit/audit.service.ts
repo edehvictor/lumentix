@@ -16,7 +16,7 @@ export class AuditService {
 
   constructor(
     @InjectRepository(AuditLog)
-    private readonly auditLogRepository: Repository<AuditLog>,
+    public readonly auditLogRepository: Repository<AuditLog>,
   ) {}
 
   async log(entry: AuditLogEntry): Promise<AuditLog> {
