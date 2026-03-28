@@ -2,8 +2,8 @@
 
 use crate::error::LumentixError;
 use crate::events::{
-    EventCancelled, EventCompleted, EventCreated, EventStatusChanged, PlatformFeeUpdated,
-    PlatformFeesWithdrawn, TicketPurchased,
+    EventCancelled, EventCompleted, EventCreated, EventStatusChanged, EventUpdated,
+    PlatformFeeUpdated, PlatformFeesWithdrawn, TicketPurchased, TicketTransferred,
 };
 use crate::storage;
 use crate::types::{Event, EventStatus, Ticket};
@@ -83,6 +83,78 @@ impl LumentixContract {
         );
 
         Ok(event_id)
+    }
+
+    /// Update event details. Only draft events can be updated.
+    /// Validates all inputs and ensures max_tickets is not reduced below tickets_sold.
+    /// Only the event organizer can update the event.
+    pub fn update_event(
+        env: Env,
+        organizer: Address,
+        event_id: u64,
+        name: String,
+        description: String,
+        location: String,
+        start_time: u64,
+        end_time: u64,
+        ticket_price: i128,
+        max_tickets: u32,
+    ) -> Result<(), LumentixError> {
+        organizer.require_auth();
+
+        // Get the existing event
+        let mut event = storage::get_event(&env, event_id)?;
+
+        // Verify organizer owns the event
+        if event.organizer != organizer {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        // Verify event status is Draft
+        if event.status != EventStatus::Draft {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+
+        // Validate all new values
+        validation::validate_string_not_empty(&name)?;
+        validation::validate_string_not_empty(&description)?;
+        validation::validate_string_not_empty(&location)?;
+        validation::validate_positive_amount(ticket_price)?;
+        validation::validate_positive_capacity(max_tickets)?;
+        validation::validate_time_range(start_time, end_time)?;
+
+        // If max_tickets is being reduced, ensure it's not below tickets_sold
+        if max_tickets < event.tickets_sold {
+            return Err(LumentixError::CapacityExceeded);
+        }
+
+        // Update event fields
+        event.name = name.clone();
+        event.description = description.clone();
+        event.location = location.clone();
+        event.start_time = start_time;
+        event.end_time = end_time;
+        event.ticket_price = ticket_price;
+        event.max_tickets = max_tickets;
+
+        // Store updated event
+        storage::set_event(&env, event_id, &event);
+
+        // Emit EventUpdated event
+        EventUpdated::emit(
+            &env,
+            event_id,
+            organizer,
+            name,
+            description,
+            location,
+            start_time,
+            end_time,
+            ticket_price,
+            max_tickets,
+        );
+
+        Ok(())
     }
 
     /// Update event status with validated transitions.
@@ -202,6 +274,97 @@ impl LumentixContract {
         Ok(ticket_id)
     }
 
+    /// Purchase multiple tickets in a single transaction for a published event.
+    /// More efficient than calling purchase_ticket multiple times for groups.
+    /// Batch size is capped at 10 tickets per transaction.
+    pub fn batch_purchase_tickets(
+        env: Env,
+        buyer: Address,
+        event_id: u64,
+        quantity: u32,
+        total_amount: i128,
+    ) -> Result<Vec<u64>, LumentixError> {
+        buyer.require_auth();
+
+        // Validate quantity is positive and within batch limit
+        if quantity == 0 {
+            return Err(LumentixError::InvalidAmount);
+        }
+        if quantity > 10 {
+            return Err(LumentixError::CapacityExceeded);
+        }
+
+        let mut event = storage::get_event(&env, event_id)?;
+
+        // Event must be published
+        if event.status != EventStatus::Published {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+
+        // Validate total_amount matches expected price
+        let expected_amount = event.ticket_price * quantity as i128;
+        if total_amount != expected_amount {
+            return Err(LumentixError::InsufficientFunds);
+        }
+
+        // Check availability for the requested quantity
+        let available = event.max_tickets.saturating_sub(event.tickets_sold);
+        if available < quantity {
+            return Err(LumentixError::EventSoldOut);
+        }
+
+        // Calculate platform fee for total amount
+        let fee_bps = storage::get_platform_fee_bps(&env);
+        let platform_fee = (total_amount * fee_bps as i128) / 10000;
+        let escrow_amount = total_amount - platform_fee;
+
+        // Collect platform fee
+        if platform_fee > 0 {
+            storage::add_platform_balance(&env, platform_fee);
+        }
+
+        // Add to escrow
+        storage::add_escrow(&env, event_id, escrow_amount);
+
+        // Update tickets_sold counter
+        event.tickets_sold += quantity;
+        storage::set_event(&env, event_id, &event);
+
+        // Create tickets and collect IDs
+        let mut ticket_ids = Vec::new(&env);
+        let purchase_time = env.ledger().timestamp();
+
+        for _ in 0..quantity {
+            let ticket_id = storage::get_next_ticket_id(&env);
+            storage::increment_ticket_id(&env);
+
+            let ticket = Ticket {
+                id: ticket_id,
+                event_id,
+                owner: buyer.clone(),
+                purchase_time,
+                used: false,
+                refunded: false,
+            };
+
+            storage::set_ticket(&env, ticket_id, &ticket);
+            ticket_ids.push_back(ticket_id);
+
+            // Emit event for each ticket
+            TicketPurchased::emit(
+                &env,
+                ticket_id,
+                event_id,
+                buyer.clone(),
+                event.ticket_price,
+                platform_fee / quantity as i128,
+                escrow_amount / quantity as i128,
+            );
+        }
+
+        Ok(ticket_ids)
+    }
+
     /// Mark a ticket as used (check-in at event).
     /// Only the event organizer can use tickets.
     pub fn use_ticket(env: Env, ticket_id: u64, caller: Address) -> Result<(), LumentixError> {
@@ -221,6 +384,52 @@ impl LumentixContract {
 
         ticket.used = true;
         storage::set_ticket(&env, ticket_id, &ticket);
+
+        Ok(())
+    }
+
+    /// Transfer a ticket from one owner to another.
+    /// Only the current ticket owner can transfer it.
+    /// Tickets can only be transferred for published events.
+    /// Used or refunded tickets cannot be transferred.
+    pub fn transfer_ticket(
+        env: Env,
+        ticket_id: u64,
+        from: Address,
+        to: Address,
+    ) -> Result<(), LumentixError> {
+        from.require_auth();
+
+        // Read the ticket
+        let mut ticket = storage::get_ticket(&env, ticket_id)?;
+
+        // Verify the caller is the current owner
+        if ticket.owner != from {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        // Verify ticket is not used
+        if ticket.used {
+            return Err(LumentixError::TicketAlreadyUsed);
+        }
+
+        // Verify ticket is not refunded
+        if ticket.refunded {
+            return Err(LumentixError::RefundNotAllowed);
+        }
+
+        // Read the event and verify it's published
+        let event = storage::get_event(&env, ticket.event_id)?;
+        if event.status != EventStatus::Published {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+
+        // Update ticket owner
+        ticket.owner = to.clone();
+        storage::set_ticket(&env, ticket_id, &ticket);
+
+        // Emit TicketTransferred event
+        TicketTransferred::emit(&env, ticket_id, from, to, ticket.event_id);
 
         Ok(())
     }
@@ -549,5 +758,12 @@ impl LumentixContract {
             return Err(LumentixError::NotInitialized);
         }
         Ok(storage::get_admin(&env))
+    }
+
+    /// Check if the contract has been initialized.
+    /// Returns true if initialized, false otherwise.
+    /// No auth required - useful for frontends and deployment scripts.
+    pub fn get_is_initialized(env: Env) -> bool {
+        storage::is_initialized(&env)
     }
 }

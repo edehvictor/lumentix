@@ -118,6 +118,40 @@ impl PlatformFeesWithdrawn {
     }
 }
 
+/// Event emitted when an event is updated
+pub struct EventUpdated;
+
+impl EventUpdated {
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit(
+        env: &Env,
+        event_id: u64,
+        organizer: Address,
+        name: String,
+        description: String,
+        location: String,
+        start_time: u64,
+        end_time: u64,
+        ticket_price: i128,
+        max_tickets: u32,
+    ) {
+        env.events().publish(
+            (symbol_short!("evtupdt"),),
+            (
+                event_id,
+                organizer,
+                name,
+                description,
+                location,
+                start_time,
+                end_time,
+                ticket_price,
+                max_tickets,
+            ),
+        );
+    }
+}
+
 pub struct TicketPurchased;
 
 impl TicketPurchased {
@@ -140,6 +174,18 @@ impl TicketPurchased {
                 platform_fee,
                 organizer_amount,
             ),
+        );
+    }
+}
+
+/// Event emitted when a ticket is transferred from one owner to another
+pub struct TicketTransferred;
+
+impl TicketTransferred {
+    pub fn emit(env: &Env, ticket_id: u64, from: Address, to: Address, event_id: u64) {
+        env.events().publish(
+            (symbol_short!("tkttrans"),),
+            (ticket_id, from, to, event_id),
         );
     }
 }
