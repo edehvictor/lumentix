@@ -13,6 +13,7 @@ import { EventStateService } from './state/event-state.service';
 import { NotificationService } from '../notifications/notification.service';
 import { User } from '../users/entities/user.entity';
 import { TicketEntity } from '../tickets/entities/ticket.entity';
+import { EscrowService } from '../payments/services/escrow.service';
 
 export interface PaginatedResult<T> {
   data: T[];
@@ -33,6 +34,7 @@ export class EventsService {
     private readonly ticketRepository: Repository<TicketEntity>,
     private readonly eventStateService: EventStateService,
     private readonly notificationService: NotificationService,
+    private readonly escrowService: EscrowService,
   ) {}
 
   async createEvent(dto: CreateEventDto, organizerId: string): Promise<Event> {
@@ -62,6 +64,8 @@ export class EventsService {
     }
 
     const previousStatus = event.status;
+    const isPublishing =
+      dto.status === EventStatus.PUBLISHED && dto.status !== previousStatus;
 
     const updates: Partial<Event> = {
       ...(dto.title !== undefined && { title: dto.title }),
@@ -69,7 +73,7 @@ export class EventsService {
       ...(dto.location !== undefined && { location: dto.location }),
       ...(dto.ticketPrice !== undefined && { ticketPrice: dto.ticketPrice }),
       ...(dto.currency !== undefined && { currency: dto.currency }),
-      ...(dto.status !== undefined && { status: dto.status }),
+      ...(!isPublishing && dto.status !== undefined && { status: dto.status }),
       ...(dto.startDate !== undefined && {
         startDate: new Date(dto.startDate),
       }),
@@ -77,6 +81,14 @@ export class EventsService {
     };
 
     Object.assign(event, updates);
+
+    if (isPublishing) {
+      await this.eventRepository.save(event);
+      const published = await this.publishEvent(id, callerId);
+      this.queueLifecycleEmail(published).catch(() => undefined);
+      return published;
+    }
+
     const saved = await this.eventRepository.save(event);
 
     if (dto.status !== undefined && dto.status !== previousStatus) {
@@ -84,6 +96,28 @@ export class EventsService {
     }
 
     return saved;
+  }
+
+  async publishEvent(id: string, callerId: string): Promise<Event> {
+    const event = await this.getEventById(id);
+
+    if (event.organizerId !== callerId) {
+      throw new ForbiddenException('You are not the organiser of this event.');
+    }
+
+    this.eventStateService.validateTransition(
+      event.status,
+      EventStatus.PUBLISHED,
+    );
+
+    event.status = EventStatus.PUBLISHED;
+    await this.eventRepository.save(event);
+
+    if (!event.escrowPublicKey || !event.escrowSecretEncrypted) {
+      await this.escrowService.createEscrow(event.id);
+    }
+
+    return this.getEventById(id);
   }
 
   async deleteEvent(id: string, callerId: string): Promise<void> {

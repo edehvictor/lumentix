@@ -35,7 +35,6 @@ export interface PaymentIntent {
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
-  private readonly escrowWallet: string;
 
   constructor(
     @InjectRepository(Payment)
@@ -48,16 +47,7 @@ export class PaymentsService {
     private readonly auditService: AuditService,
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
-  ) {
-    this.escrowWallet =
-      this.configService.get<string>('ESCROW_WALLET_PUBLIC_KEY') ?? '';
-
-    if (!this.escrowWallet) {
-      this.logger.warn(
-        'ESCROW_WALLET_PUBLIC_KEY is not set. Payment confirmation will fail.',
-      );
-    }
-  }
+  ) {}
 
   // ─────────────────────────────────────────────────────────────────────────
   // STEP 1 — Create payment intent
@@ -82,6 +72,8 @@ export class PaymentsService {
         `Event "${event.title}" is not available for purchase (status: ${event.status}).`,
       );
     }
+
+    const escrowWallet = this.getEventEscrowWallet(event);
 
     // 3. Validate asset type
     const currency = event.currency.toUpperCase() as SupportedAsset;
@@ -136,7 +128,7 @@ export class PaymentsService {
         );
         return {
           paymentId: existing.id,
-          escrowWallet: this.escrowWallet,
+          escrowWallet,
           amount: event.ticketPrice,
           currency,
           memo: existing.id,
@@ -181,7 +173,7 @@ export class PaymentsService {
 
     return {
       paymentId: saved.id,
-      escrowWallet: this.escrowWallet,
+      escrowWallet,
       amount: event.ticketPrice,
       currency,
       memo: saved.id,
@@ -248,6 +240,9 @@ export class PaymentsService {
       );
     }
 
+    const event = await this.eventsService.getEventById(payment.eventId);
+    const escrowWallet = this.getEventEscrowWallet(event);
+
     const ops = await this.resolvePaymentOperations(txRecord);
 
     if (ops.length === 0) {
@@ -260,12 +255,12 @@ export class PaymentsService {
       );
     }
 
-    const matchingOp = ops.find((op) => op.to === this.escrowWallet);
+    const matchingOp = ops.find((op) => op.to === escrowWallet);
 
     if (!matchingOp) {
       await this.markFailed(
         payment,
-        `Incorrect destination. Expected ${this.escrowWallet}.`,
+        `Incorrect destination. Expected ${escrowWallet}.`,
       );
       throw new BadRequestException(
         `Payment destination does not match the escrow wallet.`,
@@ -341,6 +336,19 @@ export class PaymentsService {
     }
 
     return payment;
+  }
+
+  private getEventEscrowWallet(event: {
+    id: string;
+    escrowPublicKey?: string | null;
+  }): string {
+    if (!event.escrowPublicKey) {
+      throw new ConflictException(
+        `Event "${event.id}" does not have an escrow wallet configured.`,
+      );
+    }
+
+    return event.escrowPublicKey;
   }
 
   // ─────────────────────────────────────────────────────────────────────────

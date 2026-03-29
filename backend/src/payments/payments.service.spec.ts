@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
+  ConflictException,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
@@ -55,7 +56,6 @@ describe('PaymentsService', () => {
 
     mockConfigService = {
       get: jest.fn((key: string) => {
-        if (key === 'ESCROW_WALLET_PUBLIC_KEY') return 'ESCROW_WALLET_ADDRESS';
         if (key === 'PAYMENT_INTENT_TTL_MINUTES') return 30;
         return undefined;
       }),
@@ -70,7 +70,10 @@ describe('PaymentsService', () => {
         { provide: StellarService, useValue: mockStellarService },
         { provide: AuditService, useValue: mockAuditService },
         { provide: ConfigService, useValue: mockConfigService },
-        { provide: NotificationService, useValue: { queuePaymentFailedEmail: jest.fn() } },
+        {
+          provide: NotificationService,
+          useValue: { queuePaymentFailedEmail: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -93,6 +96,7 @@ describe('PaymentsService', () => {
         id: 'event-123',
         title: 'Test Event',
         status: EventStatus.CANCELLED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
         currency: 'USDC',
         ticketPrice: 100,
         maxAttendees: null,
@@ -111,6 +115,7 @@ describe('PaymentsService', () => {
         id: 'event-123',
         title: 'Test Event',
         status: EventStatus.DRAFT,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
         currency: 'USDC',
         ticketPrice: 100,
         maxAttendees: null,
@@ -129,6 +134,7 @@ describe('PaymentsService', () => {
         id: 'event-123',
         title: 'Test Event',
         status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
         currency: 'BTC',
         ticketPrice: 100,
         maxAttendees: null,
@@ -147,6 +153,7 @@ describe('PaymentsService', () => {
         id: 'event-123',
         title: 'Test Event',
         status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
         currency: 'USDC',
         ticketPrice: 100,
         maxAttendees: 10,
@@ -170,6 +177,7 @@ describe('PaymentsService', () => {
         id: 'event-123',
         title: 'Test Event',
         status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
         currency: 'USDC',
         ticketPrice: 100,
         maxAttendees: null,
@@ -192,7 +200,7 @@ describe('PaymentsService', () => {
       expect(result.memo).toBe('pay-123');
       expect(result.amount).toBe(100);
       expect(result.currency).toBe('USDC');
-      expect(result.escrowWallet).toBe('ESCROW_WALLET_ADDRESS');
+      expect(result.escrowWallet).toBe('EVENT_ESCROW_WALLET');
     });
 
     it('should mark expired PENDING payment as FAILED and create new one', async () => {
@@ -203,6 +211,7 @@ describe('PaymentsService', () => {
         id: 'event-123',
         title: 'Test Event',
         status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
         currency: 'USDC',
         ticketPrice: 100,
         maxAttendees: null,
@@ -249,6 +258,7 @@ describe('PaymentsService', () => {
         id: 'event-123',
         title: 'Test Event',
         status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
         currency: 'USDC',
         ticketPrice: 100,
         maxAttendees: null,
@@ -281,7 +291,7 @@ describe('PaymentsService', () => {
       const result = await service.createPaymentIntent('event-123', 'user-123');
 
       expect(result.paymentId).toBe('pay-new-123');
-      expect(result.escrowWallet).toBe('ESCROW_WALLET_ADDRESS');
+      expect(result.escrowWallet).toBe('EVENT_ESCROW_WALLET');
       expect(result.amount).toBe(100);
       expect(result.currency).toBe('USDC');
       expect(result.memo).toBe('pay-new-123');
@@ -292,6 +302,25 @@ describe('PaymentsService', () => {
           userId: 'user-123',
         }),
       );
+    });
+
+    it('should throw ConflictException when published event has no escrow wallet', async () => {
+      mockEventsService.getEventById.mockResolvedValue({
+        id: 'event-123',
+        title: 'Test Event',
+        status: EventStatus.PUBLISHED,
+        escrowPublicKey: null,
+        currency: 'USDC',
+        ticketPrice: 100,
+        maxAttendees: null,
+      });
+
+      await expect(
+        service.createPaymentIntent('event-123', 'user-123'),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        service.createPaymentIntent('event-123', 'user-123'),
+      ).rejects.toThrow('does not have an escrow wallet configured');
     });
   });
 
@@ -418,6 +447,12 @@ describe('PaymentsService', () => {
         amount: 100,
         currency: 'USDC',
       });
+      mockEventsService.getEventById.mockResolvedValue({
+        id: 'event-123',
+        title: 'Test Event',
+        status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
+      });
 
       // Mock fetch to return no operations
       global.fetch = jest.fn().mockResolvedValue({
@@ -450,6 +485,12 @@ describe('PaymentsService', () => {
         eventId: 'event-123',
         amount: 100,
         currency: 'USDC',
+      });
+      mockEventsService.getEventById.mockResolvedValue({
+        id: 'event-123',
+        title: 'Test Event',
+        status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
       });
 
       global.fetch = jest.fn().mockResolvedValue({
@@ -495,6 +536,12 @@ describe('PaymentsService', () => {
         amount: 100,
         currency: 'USDC',
       });
+      mockEventsService.getEventById.mockResolvedValue({
+        id: 'event-123',
+        title: 'Test Event',
+        status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
+      });
 
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -503,7 +550,7 @@ describe('PaymentsService', () => {
             records: [
               {
                 type: 'payment',
-                to: 'ESCROW_WALLET_ADDRESS',
+                to: 'EVENT_ESCROW_WALLET',
                 amount: '100',
                 asset_type: 'native',
                 asset_code: undefined,
@@ -539,6 +586,12 @@ describe('PaymentsService', () => {
         amount: 100,
         currency: 'USDC',
       });
+      mockEventsService.getEventById.mockResolvedValue({
+        id: 'event-123',
+        title: 'Test Event',
+        status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
+      });
 
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -547,7 +600,7 @@ describe('PaymentsService', () => {
             records: [
               {
                 type: 'payment',
-                to: 'ESCROW_WALLET_ADDRESS',
+                to: 'EVENT_ESCROW_WALLET',
                 amount: '50.5', // Wrong amount
                 asset_type: 'credit_alphanum4',
                 asset_code: 'USDC',
@@ -584,6 +637,12 @@ describe('PaymentsService', () => {
         currency: 'USDC',
         transactionHash: null,
       });
+      mockEventsService.getEventById.mockResolvedValue({
+        id: 'event-123',
+        title: 'Test Event',
+        status: EventStatus.PUBLISHED,
+        escrowPublicKey: 'EVENT_ESCROW_WALLET',
+      });
 
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -592,7 +651,7 @@ describe('PaymentsService', () => {
             records: [
               {
                 type: 'payment',
-                to: 'ESCROW_WALLET_ADDRESS',
+                to: 'EVENT_ESCROW_WALLET',
                 amount: '100',
                 asset_type: 'credit_alphanum4',
                 asset_code: 'USDC',
