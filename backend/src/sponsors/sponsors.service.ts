@@ -79,6 +79,41 @@ export class SponsorsService {
     return tier;
   }
 
+  async getFundingProgress(eventId: string) {
+    const [event, totalRaised, contributorCount] = await Promise.all([
+      this.eventsService.getEventById(eventId),
+      this.contributionRepository
+        .createQueryBuilder('c')
+        .innerJoin('c.tier', 'tier')
+        .select('SUM(c.amount)', 'total')
+        .where('tier.eventId = :eventId AND c.status = :status', {
+          eventId,
+          status: ContributionStatus.CONFIRMED,
+        })
+        .getRawOne<{ total: string | null }>(),
+      this.contributionRepository
+        .createQueryBuilder('c')
+        .innerJoin('c.tier', 'tier')
+        .select('COUNT(DISTINCT c.sponsorId)', 'count')
+        .where('tier.eventId = :eventId AND c.status = :status', {
+          eventId,
+          status: ContributionStatus.CONFIRMED,
+        })
+        .getRawOne<{ count: string | null }>(),
+    ]);
+
+    const raised = Number(totalRaised?.total ?? 0);
+    const goal = event.fundingGoal ? Number(event.fundingGoal) : null;
+
+    return {
+      raised,
+      goal,
+      percentage: goal ? Math.min(100, Math.round((raised / goal) * 100)) : null,
+      contributorCount: Number(contributorCount?.count ?? 0),
+      goalReached: goal ? raised >= goal : false,
+    };
+  }
+
   private async assertEventOrganizer(
     eventId: string,
     requesterId: string,

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   OnModuleDestroy,
 } from '@nestjs/common';
@@ -274,6 +275,25 @@ export class StellarService implements OnModuleDestroy {
       }
       throw err;
     }
+  }
+
+  /**
+   * Create and fund a new Stellar keypair via Friendbot (testnet only).
+   */
+  async createTestnetAccount(): Promise<{ publicKey: string; secret: string }> {
+    if (this.configService.get<string>('STELLAR_NETWORK') !== 'testnet') {
+      throw new BadRequestException(
+        'Account creation is only available on testnet',
+      );
+    }
+    const keypair = Keypair.random();
+    const res = await fetch(
+      `https://friendbot.stellar.org?addr=${keypair.publicKey()}`,
+    );
+    if (!res.ok) {
+      throw new InternalServerErrorException('Friendbot funding failed');
+    }
+    return { publicKey: keypair.publicKey(), secret: keypair.secret() };
   }
 
   /**
