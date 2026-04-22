@@ -21,7 +21,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { PaymentStatus } from '../payments/entities/payment.entity';
 import { StellarService } from '../stellar/stellar.service';
 import { NotificationService } from '../notifications/notification.service';
-import { Event } from '../events/entities/event.entity';
+import { paginate } from '../common/pagination/pagination.helper';
 import { User } from '../users/entities/user.entity';
 
 @Injectable()
@@ -59,7 +59,6 @@ export class TicketsService {
       });
     }
 
-    const { paginate } = await import('../common/pagination/pagination.helper');
     return paginate(queryBuilder, paginationDto, 'ticket');
   }
 
@@ -101,7 +100,6 @@ export class TicketsService {
       .where('ticket.ownerId = :ownerId', { ownerId })
       .orderBy('ticket.createdAt', 'DESC');
 
-    const { paginate } = await import('../common/pagination/pagination.helper');
     return paginate(queryBuilder, paginationDto, 'ticket');
   }
 

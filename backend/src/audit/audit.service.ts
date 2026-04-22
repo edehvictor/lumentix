@@ -23,6 +23,10 @@ export class AuditService {
     return this.auditLogRepository.createQueryBuilder('audit');
   }
 
+  findById(id: string): Promise<AuditLog | null> {
+    return this.auditLogRepository.findOneBy({ id });
+  }
+
   async log(entry: AuditLogEntry): Promise<AuditLog> {
     const record = this.auditLogRepository.create({
       action: entry.action,

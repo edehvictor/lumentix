@@ -13,14 +13,18 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { RegistrationsService } from './registrations.service';
 import { ListRegistrationsDto } from './dto/list-registrations.dto';
 import { Roles, Role } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
 
+@ApiTags('Registrations')
+@ApiBearerAuth()
 @Controller()
-@UseGuards(RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class RegistrationsController {
   constructor(private readonly service: RegistrationsService) {}
 

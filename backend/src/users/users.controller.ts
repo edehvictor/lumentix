@@ -101,17 +101,6 @@ export class UsersController {
     return this.usersService.requestRole(req.user.id, dto);
   }
 
-  @Get(':id')
-  @ApiOperation({
-    summary: 'Find a user by ID',
-    description: 'Retrieves user details.',
-  })
-  @ApiResponse({ status: 200, description: 'User found.' })
-  @ApiResponse({ status: 404, description: 'User not found.' })
-  async findOne(@Param('id') id: string) {
-    return this.usersService.findById(id);
-  }
-
   // ── Wallet ─────────────────────────────────────────────────────────────────
 
   @Get('wallet/balances')
@@ -136,5 +125,16 @@ export class UsersController {
     @Query('base') baseCurrency: string = 'USD',
   ) {
     return this.usersService.getPortfolioValue(req.user.id, baseCurrency);
+  }
+
+  @Get(':id')
+  @ApiOperation({
+    summary: 'Find a user by ID',
+    description: 'Retrieves user details.',
+  })
+  @ApiResponse({ status: 200, description: 'User found.' })
+  @ApiResponse({ status: 404, description: 'User not found.' })
+  async findOne(@Param('id') id: string) {
+    return this.usersService.findById(id);
   }
 }
