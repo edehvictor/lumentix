@@ -7,7 +7,7 @@ use crate::events::{
     TicketTransferred, TicketUsed,
 };
 use crate::storage;
-use crate::types::{Event, EventStatus, Ticket};
+use crate::types::{Event, EventStatus, Ticket, PERSISTENT_LIFETIME};
 use crate::validation;
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
@@ -706,6 +706,21 @@ impl LumentixContract {
         event.organizer.require_auth();
 
         // Accessing storage via `get_event` automatically extends TTL based on storage.rs logic.
+        Ok(())
+    }
+
+    /// Extend the TTL of a ticket to prevent expiration before the event.
+    /// No authorization required as this is a maintenance operation.
+    pub fn bump_ticket_ttl(env: Env, ticket_id: u64) -> Result<(), LumentixError> {
+        // Read the ticket to verify it exists
+        let _ticket = storage::get_ticket(&env, ticket_id)?;
+
+        // Extend the TTL for the ticket storage key
+        let key = ("TICKET_", ticket_id);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+
         Ok(())
     }
 
