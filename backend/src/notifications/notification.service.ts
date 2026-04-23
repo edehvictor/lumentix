@@ -13,15 +13,22 @@ export class NotificationService {
     email: string;
     ticketId: string;
     eventName: string;
+    pdfUrl?: string;
   }) {
     await this.notificationQueue.add('sendTicketEmail', data, {
-      attempts: 3, // Retry 3 times if it fails
-      backoff: {
-        type: 'exponential',
-        delay: 5000, // Wait 5s, then 10s, then 20s...
-      },
-      removeOnComplete: true, // Clean up Redis after success
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: true,
     });
+  }
+
+  async queueTicketSoldEmail(data: {
+    email: string;
+    ticketId: string;
+    amount: number;
+    currency: string;
+  }) {
+    await this.notificationQueue.add('sendTicketSoldEmail', data, { attempts: 3 });
   }
 
   async queueRefundEmail(data: {

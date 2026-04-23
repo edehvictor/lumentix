@@ -291,4 +291,47 @@ describe('RefundService', () => {
       expect(results[1].transactionHash).toBe('tx-success');
     });
   });
+
+  // ─── checkRefundEligibility — 24h cutoff ──────────────────────────────────
+
+  describe('checkRefundEligibility() — 24h cutoff', () => {
+    const RECENT_PAYMENT = {
+      id: 'pay-1',
+      eventId: 'event-1',
+      userId: 'user-1',
+      amount: 10,
+      currency: 'XLM',
+      status: PaymentStatus.CONFIRMED,
+      createdAt: new Date(Date.now() - 1 * 60 * 60 * 1000), // 1h ago
+    } as Payment;
+
+    it('returns eligible: false when event starts within 24h', async () => {
+      paymentsRepo.findOne.mockResolvedValue(RECENT_PAYMENT);
+      usersRepo.findOne.mockResolvedValue(USER_WITH_KEY);
+      eventsRepo.findOne.mockResolvedValue({
+        id: 'event-1',
+        startDate: new Date(Date.now() + 12 * 60 * 60 * 1000), // 12h from now
+      } as any);
+
+      const result = await service.checkRefundEligibility('pay-1');
+
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toBe('Too close to event start');
+      expect(result.refundAmount).toBe(0);
+    });
+
+    it('returns eligible: true when event starts more than 24h away', async () => {
+      paymentsRepo.findOne.mockResolvedValue(RECENT_PAYMENT);
+      usersRepo.findOne.mockResolvedValue(USER_WITH_KEY);
+      eventsRepo.findOne.mockResolvedValue({
+        id: 'event-1',
+        startDate: new Date(Date.now() + 25 * 60 * 60 * 1000), // 25h from now
+      } as any);
+
+      const result = await service.checkRefundEligibility('pay-1');
+
+      expect(result.eligible).toBe(true);
+      expect(result.refundAmount).toBeGreaterThan(0);
+    });
+  });
 });

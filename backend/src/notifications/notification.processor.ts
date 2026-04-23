@@ -53,13 +53,33 @@ export class NotificationProcessor {
     if (await this.shouldSkip(job, 'ticketIssued')) return;
 
     this.logger.log(`Sending ticket email for job ${job.id}...`);
-    const { email, ticketId, eventName } = job.data;
+    const { email, ticketId, eventName, pdfUrl } = job.data;
     const subject = `Your ticket for ${eventName}`;
+    const pdfLink = pdfUrl
+      ? `<p><a href="${pdfUrl}" style="color: #007bff;">Download your PDF ticket</a></p>`
+      : '';
     const html = `
       <div style="font-family: Arial, sans-serif;">
         <h2>Your Ticket for ${eventName}</h2>
         <p>Ticket ID: <strong>${ticketId}</strong></p>
         <p>Redeem your ticket <a href="https://lumentix.com/redeem/${ticketId}" style="color: #007bff;">here</a>.</p>
+        ${pdfLink}
+      </div>
+    `;
+    await this.mailerService.send(email, subject, html);
+    return { sent: true };
+  }
+
+  @Process('sendTicketSoldEmail')
+  async handleTicketSoldEmail(job: Job) {
+    this.logger.log(`Sending ticket sold email for job ${job.id}...`);
+    const { email, ticketId, amount, currency } = job.data;
+    const subject = 'Your ticket has been sold';
+    const html = `
+      <div style="font-family: Arial, sans-serif;">
+        <h2>Your Ticket Has Been Sold</h2>
+        <p>Ticket ID: <strong>${ticketId}</strong></p>
+        <p>Sale amount: <strong>${amount} ${currency}</strong></p>
       </div>
     `;
     await this.mailerService.send(email, subject, html);

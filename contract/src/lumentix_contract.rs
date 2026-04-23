@@ -2,11 +2,12 @@
 
 use crate::error::LumentixError;
 use crate::events::{
-    AdminChanged, EventCancelled, EventCompleted, EventCreated, EventStatusChanged, EventUpdated,
-    PlatformFeeUpdated, PlatformFeesWithdrawn, TicketPurchased, TicketTransferred,
+    AdminChanged, EscrowReleased, EventCancelled, EventCompleted, EventCreated, EventStatusChanged,
+    EventUpdated, PlatformFeeUpdated, PlatformFeesWithdrawn, TicketPurchased, TicketRefunded,
+    TicketTransferred, TicketUsed,
 };
 use crate::storage;
-use crate::types::{Event, EventStatus, Ticket};
+use crate::types::{Event, EventStatus, Ticket, PERSISTENT_LIFETIME};
 use crate::validation;
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
@@ -672,6 +673,16 @@ impl LumentixContract {
         storage::get_ticket(&env, ticket_id)
     }
 
+    /// Check whether a ticket is currently valid for entry.
+    /// A ticket is valid only when it exists, has not been used or refunded,
+    /// and its event is still published.
+    pub fn get_ticket_validity(env: Env, ticket_id: u64) -> Result<bool, LumentixError> {
+        let ticket = storage::get_ticket(&env, ticket_id)?;
+        let event = storage::get_event(&env, ticket.event_id)?;
+
+        Ok(!ticket.used && !ticket.refunded && event.status == EventStatus::Published)
+    }
+
     /// Get all tickets sold for a given event.
     /// Returns EventNotFound if the event does not exist.
     pub fn get_tickets_by_event(env: Env, event_id: u64) -> Result<Vec<Ticket>, LumentixError> {
@@ -738,6 +749,34 @@ impl LumentixContract {
         tickets
     }
 
+    /// Get all refunded tickets for a specific event.
+    /// Useful for organizers to track refund activity and for auditing after event cancellation.
+    /// Returns an empty Vec if no refunded tickets exist for the event.
+    pub fn get_refunded_tickets_by_event(
+        env: Env,
+        event_id: u64,
+    ) -> Result<Vec<Ticket>, LumentixError> {
+        // Verify the event exists
+        let _ = storage::get_event(&env, event_id)?;
+
+        let mut refunded_tickets = Vec::new(&env);
+        let next_ticket_id = storage::get_next_ticket_id(&env);
+        let mut ticket_id: u64 = 1;
+
+        // Iterate through all tickets
+        while ticket_id < next_ticket_id {
+            if let Ok(ticket) = storage::get_ticket(&env, ticket_id) {
+                // Check if ticket belongs to this event and is refunded
+                if ticket.event_id == event_id && ticket.refunded {
+                    refunded_tickets.push_back(ticket);
+                }
+            }
+            ticket_id += 1;
+        }
+
+        Ok(refunded_tickets)
+    }
+
     /// Extend the TTL of an event. Only the organizer can call this.
     pub fn bump_event_ttl(env: Env, event_id: u64) -> Result<(), LumentixError> {
         let event = storage::get_event(&env, event_id)?;
@@ -746,6 +785,21 @@ impl LumentixContract {
         event.organizer.require_auth();
 
         // Accessing storage via `get_event` automatically extends TTL based on storage.rs logic.
+        Ok(())
+    }
+
+    /// Extend the TTL of a ticket to prevent expiration before the event.
+    /// No authorization required as this is a maintenance operation.
+    pub fn bump_ticket_ttl(env: Env, ticket_id: u64) -> Result<(), LumentixError> {
+        // Read the ticket to verify it exists
+        let _ticket = storage::get_ticket(&env, ticket_id)?;
+
+        // Extend the TTL for the ticket storage key
+        let key = ("TICKET_", ticket_id);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+
         Ok(())
     }
 
@@ -821,6 +875,37 @@ impl LumentixContract {
         PlatformFeesWithdrawn::emit(&env, admin, balance);
 
         Ok(balance)
+    }
+
+    /// Set the payment token address. Only the admin can call this.
+    pub fn set_token(env: Env, admin: Address, token: Address) -> Result<(), LumentixError> {
+        admin.require_auth();
+
+        if !storage::is_initialized(&env) {
+            return Err(LumentixError::NotInitialized);
+        }
+
+        let stored_admin = storage::get_admin(&env);
+        if stored_admin != admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        storage::set_token(&env, &token);
+
+        Ok(())
+    }
+
+    /// Get the configured payment token address.
+    pub fn get_token(env: Env) -> Result<Address, LumentixError> {
+        if !storage::is_initialized(&env) {
+            return Err(LumentixError::NotInitialized);
+        }
+
+        if !env.storage().instance().has(&"TOKEN") {
+            return Err(LumentixError::InvalidAddress);
+        }
+
+        Ok(storage::get_token(&env))
     }
 
     /// Get the contract admin address.

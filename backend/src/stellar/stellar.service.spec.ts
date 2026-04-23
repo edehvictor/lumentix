@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return */
+import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Horizon, Keypair } from '@stellar/stellar-sdk';
 import { StellarService } from './stellar.service';
@@ -92,6 +93,60 @@ describe('StellarService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('extractAndValidateMemo', () => {
+    it('returns a string memo', () => {
+      expect(
+        service.extractAndValidateMemo({
+          memo: 'payment-123',
+        } as Horizon.ServerApi.TransactionRecord),
+      ).toBe('payment-123');
+    });
+
+    it('trims and returns a string memo', () => {
+      expect(
+        service.extractAndValidateMemo({
+          memo: '  contribution-456  ',
+        } as Horizon.ServerApi.TransactionRecord),
+      ).toBe('contribution-456');
+    });
+
+    it('throws when memo is undefined', () => {
+      expect(() =>
+        service.extractAndValidateMemo({
+          memo: undefined,
+        } as Horizon.ServerApi.TransactionRecord),
+      ).toThrow(
+        new BadRequestException(
+          'Transaction is missing a memo. Cannot correlate with a payment or contribution intent.',
+        ),
+      );
+    });
+
+    it('throws when memo is empty', () => {
+      expect(() =>
+        service.extractAndValidateMemo({
+          memo: '   ',
+        } as Horizon.ServerApi.TransactionRecord),
+      ).toThrow(
+        new BadRequestException(
+          'Transaction is missing a memo. Cannot correlate with a payment or contribution intent.',
+        ),
+      );
+    });
+
+    it('throws when memo is not a string', () => {
+      expect(() =>
+        service.extractAndValidateMemo({
+          memo: 123,
+        } as unknown as Horizon.ServerApi.TransactionRecord),
+      ).toThrow(
+        new BadRequestException(
+          'Transaction is missing a memo. Cannot correlate with a payment or contribution intent.',
+        ),
+      );
+    });
   });
 
   // ── releaseEscrowFunds ─────────────────────────────────────────────────
@@ -222,6 +277,61 @@ describe('StellarService', () => {
       await expect(
         service.releaseEscrowFunds(ESCROW_SECRET, DESTINATION),
       ).rejects.toThrow('tx_failed');
+    });
+  });
+
+  // ── findPaymentPath ────────────────────────────────────────────────────
+
+  describe('findPaymentPath', () => {
+    const SOURCE_PUBLIC = Keypair.random().publicKey();
+
+    it('returns path records when paths are available', async () => {
+      const mockRecords = [{ source_asset_type: 'native', path: [] }];
+      const mockServer = (service as any).server;
+      mockServer.strictReceivePaths = jest.fn().mockReturnValue({
+        call: jest.fn().mockResolvedValue({ records: mockRecords }),
+      });
+
+      const result = await service.findPaymentPath(SOURCE_PUBLIC, 'XLM', 'USDC', '10');
+
+      expect(result).toEqual(mockRecords);
+      expect(mockServer.strictReceivePaths).toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when no paths are found', async () => {
+      const mockServer = (service as any).server;
+      mockServer.strictReceivePaths = jest.fn().mockReturnValue({
+        call: jest.fn().mockResolvedValue({ records: [] }),
+      });
+
+      await expect(
+        service.findPaymentPath(SOURCE_PUBLIC, 'XLM', 'USDC', '10'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ── buildPathPaymentXdr ────────────────────────────────────────────────
+
+  describe('buildPathPaymentXdr', () => {
+    it('returns a valid XDR string', async () => {
+      const { Asset: ActualAsset } = jest.requireActual('@stellar/stellar-sdk');
+      mockLoadAccount.mockResolvedValue(
+        makeMockAccount(makeBalances()),
+      );
+
+      const xdr = await service.buildPathPaymentXdr({
+        sourcePublicKey: ESCROW_PUBLIC,
+        sourceAsset: ActualAsset.native(),
+        sendMax: '15',
+        destPublicKey: DESTINATION,
+        destAsset: ActualAsset.native(),
+        destAmount: '10',
+        path: [],
+        memo: 'test-memo',
+      });
+
+      expect(typeof xdr).toBe('string');
+      expect(xdr.length).toBeGreaterThan(0);
     });
   });
 });

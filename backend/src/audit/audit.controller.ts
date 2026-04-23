@@ -120,7 +120,7 @@ export class AuditController {
   @ApiResponse({ status: 200, description: 'Log found', type: AuditLog })
   @ApiResponse({ status: 404, description: 'Log not found' })
   async getAuditLogById(@Param('id') id: string): Promise<AuditLog> {
-    const log = await this.auditService.auditLogRepository.findOneBy({ id });
+    const log = await this.auditService.findById(id);
     if (!log) {
       throw new NotFoundException('Audit log not found');
     }
