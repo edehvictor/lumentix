@@ -784,9 +784,38 @@ impl LumentixContract {
         Ok(())
     }
 
-    /// Get the current protocol fee percentage (in basis points) and fee recipient address.
-    /// Emits a ProtocolFeeQueried diagnostic event for off-chain analytics.
-    /// Returns NotInitialized error if the contract has not been initialized.
+    /// Returns the configured **protocol (platform) fee** and the **fee recipient** used for ticket flows.
+    ///
+    /// The fee is expressed in **basis points** (bps): `1_000` bps = 10%, `10_000` bps = 100%. The recipient is
+    /// always the contract **admin** address (the same account that receives accrued fees when
+    /// [`Self::withdraw_platform_fees`] is called). This query is read-only aside from emitting a diagnostic event.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` — Soroban [`Env`]: host, storage, and event interface. No caller identity is read; there is no
+    ///   `Address` parameter and **no authentication** is required.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok((fee_bps, fee_recipient))` — `fee_bps` is the current platform fee in \[0, 10_000\] (enforced on
+    ///   [`Self::set_platform_fee`]). `fee_recipient` is the admin [`Address`] from instance storage.
+    ///
+    /// # Errors
+    ///
+    /// * [`LumentixError::NotInitialized`] — returned before any storage reads if the contract has not been
+    ///   initialized via [`Self::initialize`].
+    ///
+    /// # Events
+    ///
+    /// On success, emits [`ProtocolFeeQueried`] (`feequery` topic) with `(fee_bps, fee_recipient)` for indexing
+    /// and analytics. **Every successful call emits this event**, including repeated reads with the same values.
+    ///
+    /// # Panics
+    ///
+    /// This entrypoint does not use `panic!` for control flow. A panic could still occur only if underlying
+    /// Soroban storage or the event subsystem encounters an unrecoverable host error, or if instance storage is
+    /// in an inconsistent state (for example, initialized without a valid admin record—should not happen when
+    /// only using the public API).
     pub fn get_protocol_fee(env: Env) -> Result<(u32, Address), LumentixError> {
         if !storage::is_initialized(&env) {
             return Err(LumentixError::NotInitialized);
