@@ -92,25 +92,16 @@ export class EventsService {
     return this.eventRepository.save(event);
   }
 
-  async updateEvent(
-    id: string,
-    dto: UpdateEventDto,
-    callerId: string,
-  ): Promise<Event> {
+  async updateEvent(id: string, dto: UpdateEventDto, callerId: string): Promise<Event> {
     const event = await this.getEventById(id);
-
     if (event.organizerId !== callerId) {
       throw new ForbiddenException('You are not the organiser of this event.');
     }
-
     if (dto.status !== undefined && dto.status !== event.status) {
       this.eventStateService.validateTransition(event.status, dto.status);
     }
-
     const previousStatus = event.status;
-    const isPublishing =
-      dto.status === EventStatus.PUBLISHED && dto.status !== previousStatus;
-
+    const isPublishing = dto.status === EventStatus.PUBLISHED && dto.status !== previousStatus;
     const updates: Partial<Event> = {
       ...(dto.title !== undefined && { title: dto.title }),
       ...(dto.description !== undefined && { description: dto.description }),
@@ -119,128 +110,87 @@ export class EventsService {
       ...(dto.currency !== undefined && { currency: dto.currency }),
       ...(dto.category !== undefined && { category: dto.category }),
       ...(!isPublishing && dto.status !== undefined && { status: dto.status }),
-      ...(dto.startDate !== undefined && {
-        startDate: new Date(dto.startDate),
-      }),
+      ...(dto.startDate !== undefined && { startDate: new Date(dto.startDate) }),
       ...(dto.endDate !== undefined && { endDate: new Date(dto.endDate) }),
     };
-
     Object.assign(event, updates);
-
     if (isPublishing) {
       await this.eventRepository.save(event);
       const published = await this.publishEvent(id, callerId);
       this.queueLifecycleEmail(published).catch(() => undefined);
       return published;
     }
-
     const saved = await this.eventRepository.save(event);
-
     if (dto.status !== undefined && dto.status !== previousStatus) {
       this.queueLifecycleEmail(saved).catch(() => undefined);
     }
-
     return saved;
   }
 
   async publishEvent(id: string, callerId: string): Promise<Event> {
     const event = await this.getEventById(id);
-
     if (event.organizerId !== callerId) {
       throw new ForbiddenException('You are not the organiser of this event.');
     }
-
-    this.eventStateService.validateTransition(
-      event.status,
-      EventStatus.PUBLISHED,
-    );
-
+    this.eventStateService.validateTransition(event.status, EventStatus.PUBLISHED);
     event.status = EventStatus.PUBLISHED;
     await this.eventRepository.save(event);
-
     if (!event.escrowPublicKey || !event.escrowSecretEncrypted) {
       await this.escrowService.createEscrow(event.id);
     }
-
     await this.auditService.log({
       action: AuditAction.EVENT_PUBLISHED,
       userId: callerId,
       resourceId: id,
     });
-
     return this.getEventById(id);
   }
 
   async completeEvent(id: string, callerId: string): Promise<Event> {
     const event = await this.getEventById(id);
-
     if (event.organizerId !== callerId) {
       throw new ForbiddenException('You are not the organiser of this event.');
     }
-
     if (new Date() < event.endDate) {
       throw new BadRequestException('Event has not ended yet.');
     }
-
-    this.eventStateService.validateTransition(
-      event.status,
-      EventStatus.COMPLETED,
-    );
-
+    this.eventStateService.validateTransition(event.status, EventStatus.COMPLETED);
     event.status = EventStatus.COMPLETED;
     const saved = await this.eventRepository.save(event);
-
     await this.auditService.log({
       action: AuditAction.EVENT_COMPLETED,
       userId: callerId,
       resourceId: id,
     });
-
     this.queueLifecycleEmail(saved).catch(() => undefined);
-
     return saved;
   }
 
   async cancelEvent(id: string, callerId: string): Promise<Event> {
     const event = await this.getEventById(id);
-
     if (event.organizerId !== callerId) {
       throw new ForbiddenException('You are not the organiser of this event.');
     }
-
-    this.eventStateService.validateTransition(
-      event.status,
-      EventStatus.CANCELLED,
-    );
-
+    this.eventStateService.validateTransition(event.status, EventStatus.CANCELLED);
     event.status = EventStatus.CANCELLED;
     const saved = await this.eventRepository.save(event);
-
     await this.auditService.log({
       action: AuditAction.EVENT_CANCELLED,
       userId: callerId,
       resourceId: id,
     });
-
-    // Non-blocking refund trigger — failures are logged, not thrown
     this.refundService
       .refundEvent(id)
-      .catch((err) =>
-        this.logger.error(`Refund trigger failed for event ${id}`, err),
-      );
-
+      .catch((err) => this.logger.error(`Refund trigger failed for event ${id}`, err));
     this.queueLifecycleEmail(saved).catch(() => undefined);
-
     return saved;
   }
 
   async deleteEvent(id: string, callerId: string): Promise<void> {
     const event = await this.getEventById(id);
-
     if (event.organizerId !== callerId) {
       throw new ForbiddenException('You are not the organiser of this event.');
     }
-
     await this.eventRepository.remove(event);
   }
 
@@ -249,32 +199,18 @@ export class EventsService {
     if (!event) {
       throw new NotFoundException(`Event with id "${id}" not found`);
     }
-
     const soldTickets = await this.ticketRepository.count({
       where: { eventId: id, status: 'valid' },
     });
-
     return {
       ...event,
       soldTickets,
-      remainingCapacity:
-        event.maxAttendees !== null ? event.maxAttendees - soldTickets : null,
+      remainingCapacity: event.maxAttendees !== null ? event.maxAttendees - soldTickets : null,
     };
   }
 
-  async listEvents(
-    filterDto: ListEventsDto,
-  ): Promise<PaginatedResult<EventWithCapacity>> {
-    const {
-      status,
-      organizerId,
-      search,
-      category,
-      showAvailableOnly,
-      page = 1,
-      limit = 10,
-    } = filterDto;
-
+  async listEvents(filterDto: ListEventsDto): Promise<PaginatedResult<EventWithCapacity>> {
+    const { status, organizerId, search, category, showAvailableOnly, page = 1, limit = 10 } = filterDto;
     const qb: SelectQueryBuilder<Event> = this.eventRepository
       .createQueryBuilder('event')
       .leftJoin(
@@ -289,14 +225,9 @@ export class EventsService {
         'ticket_counts."eventId" = event.id',
       )
       .addSelect('COALESCE(ticket_counts."soldCount"::int, 0)', 'soldTickets');
-
     if (status) qb.andWhere('event.status = :status', { status });
-    if (organizerId)
-      qb.andWhere('event.organizerId = :organizerId', { organizerId });
-    if (search)
-      qb.andWhere('LOWER(event.title) LIKE LOWER(:search)', {
-        search: `%${search}%`,
-      });
+    if (organizerId) qb.andWhere('event.organizerId = :organizerId', { organizerId });
+    if (search) qb.andWhere('LOWER(event.title) LIKE LOWER(:search)', { search: `%${search}%` });
     if (category) qb.andWhere('event.category = :category', { category });
     if (filterDto.categoryIds) {
       const ids = filterDto.categoryIds.split(',').filter(Boolean);
@@ -309,213 +240,115 @@ export class EventsService {
         '(event.maxAttendees IS NULL OR COALESCE(ticket_counts."soldCount"::int, 0) < event.maxAttendees)',
       );
     }
-
-    qb.orderBy('event.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
-
-    const [rawEvents, total] = await Promise.all([
-      qb.getRawAndEntities(),
-      qb.getCount(),
-    ]);
-
+    qb.orderBy('event.createdAt', 'DESC').skip((page - 1) * limit).take(limit);
+    const [rawEvents, total] = await Promise.all([qb.getRawAndEntities(), qb.getCount()]);
     const data: EventWithCapacity[] = rawEvents.entities.map((event, i) => {
       const soldTickets = Number(rawEvents.raw[i]?.soldTickets ?? 0);
       return {
         ...event,
         soldTickets,
-        remainingCapacity:
-          event.maxAttendees !== null ? event.maxAttendees - soldTickets : null,
+        remainingCapacity: event.maxAttendees !== null ? event.maxAttendees - soldTickets : null,
       };
     });
-
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
-  async getEventStats(
-    id: string,
-    callerId: string,
-  ): Promise<EventStatsResponseDto> {
+  async getEventStats(id: string, callerId: string): Promise<EventStatsResponseDto> {
     const event = await this.eventRepository.findOne({ where: { id } });
     if (!event) throw new NotFoundException(`Event with id "${id}" not found`);
-    if (event.organizerId !== callerId) {
-      throw new ForbiddenException('You are not the organiser of this event.');
-    }
-
+    if (event.organizerId !== callerId) throw new ForbiddenException('You are not the organiser of this event.');
     const [ticketStats, paymentStats, sponsorStats] = await Promise.all([
       this.ticketRepository
-        .createQueryBuilder('t')
-        .select('t.status', 'status')
-        .addSelect('COUNT(*)', 'count')
-        .where('t.eventId = :id', { id })
-        .groupBy('t.status')
-        .getRawMany(),
+        .createQueryBuilder('t').select('t.status', 'status').addSelect('COUNT(*)', 'count')
+        .where('t.eventId = :id', { id }).groupBy('t.status').getRawMany(),
       this.paymentRepository
-        .createQueryBuilder('p')
-        .select('COALESCE(SUM(p.amount), 0)', 'totalRevenue')
-        .addSelect('COUNT(*)', 'refundCount')
-        .where('p.eventId = :id AND p.status = :s', {
-          id,
-          s: PaymentStatus.REFUNDED,
-        })
+        .createQueryBuilder('p').select('COALESCE(SUM(p.amount), 0)', 'totalRevenue')
+        .addSelect('COUNT(*)', 'refundCount').where('p.eventId = :id AND p.status = :s', { id, s: PaymentStatus.REFUNDED })
         .getRawOne(),
       this.contributionRepository
-        .createQueryBuilder('c')
-        .innerJoin('c.tier', 'tier')
-        .select('COALESCE(SUM(c.amount), 0)', 'totalSponsorship')
-        .where('tier.eventId = :id AND c.status = :s', {
-          id,
-          s: ContributionStatus.CONFIRMED,
-        })
-        .getRawOne(),
+        .createQueryBuilder('c').innerJoin('c.tier', 'tier').select('COALESCE(SUM(c.amount), 0)', 'totalSponsorship')
+        .where('tier.eventId = :id AND c.status = :s', { id, s: ContributionStatus.CONFIRMED }).getRawOne(),
     ]);
-
     const ticketMap: Record<string, number> = {};
-    for (const row of ticketStats) {
-      ticketMap[row.status] = Number(row.count);
-    }
-
+    for (const row of ticketStats) ticketMap[row.status] = Number(row.count);
     const ticketsSold = ticketMap['valid'] ?? 0;
     const ticketsUsed = ticketMap['used'] ?? 0;
     const ticketsRefunded = ticketMap['refunded'] ?? 0;
-
     const confirmedRevenue = await this.paymentRepository
-      .createQueryBuilder('p')
-      .select('COALESCE(SUM(p.amount), 0)', 'totalRevenue')
-      .where('p.eventId = :id AND p.status = :s', {
-        id,
-        s: PaymentStatus.CONFIRMED,
-      })
-      .getRawOne();
-
+      .createQueryBuilder('p').select('COALESCE(SUM(p.amount), 0)', 'totalRevenue')
+      .where('p.eventId = :id AND p.status = :s', { id, s: PaymentStatus.CONFIRMED }).getRawOne();
     return {
-      ticketsSold,
-      ticketsUsed,
-      ticketsRefunded,
+      ticketsSold, ticketsUsed, ticketsRefunded,
       totalRevenue: Number(confirmedRevenue?.totalRevenue ?? 0),
       totalSponsorship: Number(sponsorStats?.totalSponsorship ?? 0),
       refundCount: Number(paymentStats?.refundCount ?? 0),
-      remainingCapacity:
-        event.maxAttendees !== null
-          ? event.maxAttendees - (ticketsSold + ticketsUsed)
-          : null,
+      remainingCapacity: event.maxAttendees !== null ? event.maxAttendees - (ticketsSold + ticketsUsed) : null,
     };
   }
 
+  async updateEventImage(eventId: string, imageUrl: string, organizerId: string): Promise<Event> {
+    const event = await this.eventRepository.findOne({ where: { id: eventId } });
+    if (!event) throw new NotFoundException('Event not found');
+    if (event.organizerId !== organizerId) throw new ForbiddenException();
+    event.imageUrl = imageUrl;
+    return this.eventRepository.save(event);
+  }
+
   async trigger_emergency_protocol(
-    id: string,
-    callerId: string,
-    data: {
-      protocol?: string;
-      message?: string;
-      emergencyServicesContact?: string;
-    },
+    id: string, callerId: string,
+    data: { protocol?: string; message?: string; emergencyServicesContact?: string },
   ) {
     const event = await this.getEventById(id);
-    if (event.organizerId !== callerId) {
-      throw new ForbiddenException('You are not the organiser of this event.');
-    }
-
-    await this.send_emergency_notifications(
-      id,
-      callerId,
-      data.message ?? 'Emergency protocol activated.',
-    );
-
+    if (event.organizerId !== callerId) throw new ForbiddenException();
+    await this.send_emergency_notifications(id, callerId, data.message ?? 'Emergency protocol activated.');
     return {
-      eventId: id,
-      protocol: data.protocol ?? 'standard_evacuation',
-      status: 'active',
-      emergencyServicesContact: data.emergencyServicesContact ?? null,
+      eventId: id, protocol: data.protocol ?? 'standard_evacuation',
+      status: 'active', emergencyServicesContact: data.emergencyServicesContact ?? null,
       activatedAt: new Date().toISOString(),
     };
   }
 
   async track_evacuation_status(id: string, callerId: string) {
     const event = await this.getEventById(id);
-    if (event.organizerId !== callerId) {
-      throw new ForbiddenException('You are not the organiser of this event.');
-    }
-
+    if (event.organizerId !== callerId) throw new ForbiddenException();
     const ticketStats = await this.getEventStats(id, callerId);
     return {
-      eventId: id,
-      status: 'tracking',
+      eventId: id, status: 'tracking',
       checkedInOrUsedTickets: ticketStats.ticketsUsed,
-      activeTicketHolders: ticketStats.ticketsSold,
-      updatedAt: new Date().toISOString(),
+      activeTicketHolders: ticketStats.ticketsSold, updatedAt: new Date().toISOString(),
     };
   }
 
-  async send_emergency_notifications(
-    id: string,
-    callerId: string,
-    message: string,
-  ) {
+  async send_emergency_notifications(id: string, callerId: string, message: string) {
     const event = await this.getEventById(id);
-    if (event.organizerId !== callerId) {
-      throw new ForbiddenException('You are not the organiser of this event.');
-    }
-
-    await this.notificationService.queueLifecycleEmail({
-      ...event,
-      status: EventStatus.CANCELLED,
-    } as Event);
-
+    if (event.organizerId !== callerId) throw new ForbiddenException();
+    await this.notificationService.queueLifecycleEmail({ ...event, status: EventStatus.CANCELLED } as Event);
     return { eventId: id, message, queued: true };
   }
 
   async monitor_weather_conditions(id: string, callerId: string) {
     const event = await this.getEventById(id);
-    if (event.organizerId !== callerId) {
-      throw new ForbiddenException('You are not the organiser of this event.');
-    }
-
-    return {
-      eventId: id,
-      location: event.location,
-      status: 'monitoring',
-      riskLevel: 'unknown',
-      checkedAt: new Date().toISOString(),
-    };
+    if (event.organizerId !== callerId) throw new ForbiddenException();
+    return { eventId: id, location: event.location, status: 'monitoring', riskLevel: 'unknown', checkedAt: new Date().toISOString() };
   }
 
-  async trigger_automatic_postponement(
-    id: string,
-    callerId: string,
-    reason = 'Unsafe weather conditions',
-  ) {
+  async trigger_automatic_postponement(id: string, callerId: string, reason = 'Unsafe weather conditions') {
     const event = await this.getEventById(id);
-    if (event.organizerId !== callerId) {
-      throw new ForbiddenException('You are not the organiser of this event.');
-    }
-
+    if (event.organizerId !== callerId) throw new ForbiddenException();
     event.status = EventStatus.CANCELLED;
     const saved = await this.eventRepository.save(event);
     await this.notificationService.queueLifecycleEmail(saved);
     return saved;
   }
 
-  async reschedule_event(
-    id: string,
-    callerId: string,
-    data: { startDate: string; endDate: string; reason?: string },
-  ) {
+  async reschedule_event(id: string, callerId: string, data: { startDate: string; endDate: string; reason?: string }) {
     const event = await this.getEventById(id);
-    if (event.organizerId !== callerId) {
-      throw new ForbiddenException('You are not the organiser of this event.');
-    }
-
+    if (event.organizerId !== callerId) throw new ForbiddenException();
     const startDate = new Date(data.startDate);
     const endDate = new Date(data.endDate);
-    if (
-      Number.isNaN(startDate.getTime()) ||
-      Number.isNaN(endDate.getTime()) ||
-      endDate <= startDate
-    ) {
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
       throw new BadRequestException('Invalid reschedule date range.');
     }
-
     event.startDate = startDate;
     event.endDate = endDate;
     const saved = await this.eventRepository.save(event);
