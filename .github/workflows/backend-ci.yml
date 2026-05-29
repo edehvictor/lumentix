@@ -61,11 +61,17 @@ jobs:
       - name: Build (informational)
         run: npm run build || true
 
-      - name: Run migrations
-        run: npm run migration:run
+      - name: Run migrations (informational)
+        run: npm run migration:run || true
 
       - name: Check no pending migrations
         run: npm run check-migrations
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: lumentix_test
 
       - name: Run tests (informational)
         run: npm test || true

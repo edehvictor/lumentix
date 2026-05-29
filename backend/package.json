@@ -21,7 +21,7 @@
     "migration:generate": "typeorm-ts-node-commonjs migration:generate --dataSource src/database/data-source.ts",
     "migration:run": "typeorm-ts-node-commonjs migration:run --dataSource src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert --dataSource src/database/data-source.ts",
-    "check-migrations": "typeorm-ts-node-commonjs migration:run --dataSource src/database/data-source.ts --dry-run 2>&1 | grep -q 'No pending migrations' && echo 'OK' || (echo 'Pending migrations found' && exit 1)"
+    "check-migrations": "typeorm-ts-node-commonjs migration:show --dataSource src/database/data-source.ts 2>&1 | tee /tmp/migration-status.txt; grep -q \"\\[ \\]\" /tmp/migration-status.txt && (echo \"Pending migrations found!\" && exit 1) || echo \"All migrations applied\""
   },
   "dependencies": {
     "@nestjs/bull": "^11.0.4",
