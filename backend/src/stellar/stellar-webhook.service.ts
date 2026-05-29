@@ -10,9 +10,24 @@ import { PaymentsService } from '../payments/payments.service';
 import { SponsorsService } from '../sponsors/sponsors.service';
 import { ContributionsService } from '../sponsors/contributions.service';
 
+/**
+ * Shared queue type for unmatched payment events.
+ */
+export interface DlqItem {
+  id: string;
+  transactionHash: string;
+  type: string;
+  payload: Record<string, unknown>;
+  retryCount: number;
+  enqueuedAt: string;
+  lastError: string | null;
+}
+
 const RECONNECT_DELAY_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 const BACKOFF_MULTIPLIER = 2;
+const MAX_DLQ_RETRIES = 5;
+const DLQ_RETRY_DELAY_MS = 30_000;
 
 @Injectable()
 export class StellarWebhookService implements OnModuleInit, OnModuleDestroy {
@@ -22,6 +37,13 @@ export class StellarWebhookService implements OnModuleInit, OnModuleDestroy {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = RECONNECT_DELAY_MS;
   private destroyed = false;
+
+  /**
+   * In-memory dead-letter queue.
+   * In production, replace with Bull/Redis.
+   */
+  private readonly deadLetterQueue: DlqItem[] = [];
+  private dlqProcessingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly stellarService: StellarService,
@@ -35,13 +57,111 @@ export class StellarWebhookService implements OnModuleInit, OnModuleDestroy {
   onModuleInit(): void {
     this.logger.log('Starting Stellar payment stream listener');
     this.connect();
+    this.startDlqProcessor();
   }
 
   onModuleDestroy(): void {
     this.destroyed = true;
     this.clearReconnectTimer();
     this.closeStream();
+    this.stopDlqProcessor();
     this.logger.log('Stellar payment stream shut down');
+  }
+
+  // ─── Dead-letter queue ─────────────────────────────────────────────────────
+
+  /** Return a snapshot of the current DLQ items (for admin endpoint). */
+  getDlqItems(): DlqItem[] {
+    return [...this.deadLetterQueue];
+  }
+
+  private enqueueDlq(
+    payment: Horizon.ServerApi.PaymentOperationRecord,
+    error: string,
+  ): void {
+    const item: DlqItem = {
+      id: payment.id,
+      transactionHash: payment.transaction_hash,
+      type: payment.type,
+      payload: payment as unknown as Record<string, unknown>,
+      retryCount: 0,
+      enqueuedAt: new Date().toISOString(),
+      lastError: error,
+    };
+    this.deadLetterQueue.push(item);
+    this.logger.warn(
+      `Enqueued unmatched event in DLQ: tx=${payment.transaction_hash}, reason=${error}`,
+    );
+  }
+
+  private startDlqProcessor(): void {
+    this.dlqProcessingInterval = setInterval(() => {
+      void this.processDlqRetries();
+    }, DLQ_RETRY_DELAY_MS);
+    this.logger.log(`DLQ processor started (interval=${DLQ_RETRY_DELAY_MS}ms)`);
+  }
+
+  private stopDlqProcessor(): void {
+    if (this.dlqProcessingInterval) {
+      clearInterval(this.dlqProcessingInterval);
+      this.dlqProcessingInterval = null;
+    }
+  }
+
+  private async processDlqRetries(): Promise<void> {
+    if (this.deadLetterQueue.length === 0) return;
+
+    const itemsToRetry = [...this.deadLetterQueue];
+    this.deadLetterQueue.length = 0; // clear — success items stay out, failures go back in
+
+    for (const item of itemsToRetry) {
+      if (item.retryCount >= MAX_DLQ_RETRIES) {
+        this.logger.error(
+          `DLQ item permanently failed after ${MAX_DLQ_RETRIES} retries: tx=${item.transactionHash}`,
+        );
+        // Write a permanent failure audit record
+        this.logger.warn(
+          `[DLQ_PERMANENT_FAILURE] tx=${item.transactionHash} type=${item.type} retries=${item.retryCount}`,
+        );
+        continue;
+      }
+
+      try {
+        // Re-construct a minimal payment-like object for handlePayment
+        const payment = {
+          id: item.id,
+          type: item.type,
+          transaction_hash: item.transactionHash,
+          ...item.payload,
+        } as unknown as Horizon.ServerApi.PaymentOperationRecord;
+
+        // Try to match the event again
+        const confirmed =
+          (await this.tryConfirmPayment(payment.transaction_hash)) ||
+          (await this.tryConfirmSponsor(payment.transaction_hash));
+
+        if (confirmed) {
+          this.logger.log(
+            `DLQ item resolved on retry: tx=${item.transactionHash}`,
+          );
+        } else {
+          // Still unmatched — re-enqueue with incremented retry count
+          this.deadLetterQueue.push({
+            ...item,
+            retryCount: item.retryCount + 1,
+            lastError: 'Still unmatched after retry',
+          });
+        }
+      } catch (err: unknown) {
+        const reason =
+          err instanceof Error ? err.message : 'Unknown error during DLQ retry';
+        this.deadLetterQueue.push({
+          ...item,
+          retryCount: item.retryCount + 1,
+          lastError: reason,
+        });
+      }
+    }
   }
 
   // ─── Connection management ────────────────────────────────────────────────
@@ -131,6 +251,9 @@ export class StellarWebhookService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug(
         `No pending payment or sponsor found for tx: ${transactionHash}`,
       );
+
+      // Enqueue unmatched event to dead-letter queue instead of discarding
+      this.enqueueDlq(payment, 'No matching payment or sponsor found');
     }
   }
 
@@ -144,13 +267,9 @@ export class StellarWebhookService implements OnModuleInit, OnModuleDestroy {
       );
       return true;
     } catch (err: unknown) {
-      // NotFoundException means no pending payment matched — not an error
       if (isNotFound(err)) return false;
-
-      // BadRequestException with "not found on Stellar" means tx isn't ready — skip
       if (isBadRequest(err) && isNotFoundMessage(err)) return false;
 
-      // Anything else is unexpected — log but don't crash the stream
       this.logger.error(
         `Unexpected error confirming payment for tx ${transactionHash}`,
         err,
