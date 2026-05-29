@@ -118,6 +118,13 @@ export class Event {
   @JoinTable({ name: 'event_categories' })
   categories: Category[];
 
+  /**
+   * Timestamp when the escrow account was merged (closed) after a full refund.
+   * NULL means the account has not been merged yet.
+   */
+  @Column({ type: 'timestamp', nullable: true, default: null })
+  mergedAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

@@ -293,10 +293,13 @@ export class EventsService {
     if (status) qb.andWhere('event.status = :status', { status });
     if (organizerId)
       qb.andWhere('event.organizerId = :organizerId', { organizerId });
-    if (search)
-      qb.andWhere('LOWER(event.title) LIKE LOWER(:search)', {
-        search: `%${search}%`,
-      });
+    if (search) {
+      // Use PostgreSQL full-text search for relevance-ranked results
+      qb.andWhere(
+        `to_tsvector('english', event.title || ' ' || COALESCE(event.description, '')) @@ plainto_tsquery('english', :search)`,
+        { search },
+      );
+    }
     if (category) qb.andWhere('event.category = :category', { category });
     if (filterDto.categoryIds) {
       const ids = filterDto.categoryIds.split(',').filter(Boolean);
@@ -310,9 +313,18 @@ export class EventsService {
       );
     }
 
-    qb.orderBy('event.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    if (search) {
+      // Rank by full-text relevance when a search term is present
+      qb.orderBy(
+        `ts_rank(to_tsvector('english', event.title || ' ' || COALESCE(event.description, '')), plainto_tsquery('english', :search2))`,
+        'DESC',
+      ).addOrderBy('event.createdAt', 'DESC');
+      qb.setParameter('search2', search);
+    } else {
+      qb.orderBy('event.createdAt', 'DESC');
+    }
+
+    qb.skip((page - 1) * limit).take(limit);
 
     const [rawEvents, total] = await Promise.all([
       qb.getRawAndEntities(),

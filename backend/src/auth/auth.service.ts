@@ -87,8 +87,14 @@ export class AuthService {
     const rawToken = `${saved.id}:${rawSecret}`;
     const base = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
     const resetUrl = `${base}/reset-password?token=${encodeURIComponent(rawToken)}`;
-    await this.mailerService.send(user.email, 'Lumentix Password Reset',
-      `<p>Click to reset: <a href="${resetUrl}">Reset your password</a></p>`);
+    await this.mailerService.send(user.email, 'Lumentix Password Reset', {
+      template: 'password-reset',
+      context: {
+        name: user.email,
+        resetUrl,
+        expiresIn: '1 hour',
+      },
+    });
     return { message: 'If the email exists, password reset instructions have been sent.' };
   }
 

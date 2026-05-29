@@ -17,7 +17,11 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "migration:generate": "typeorm-ts-node-commonjs migration:generate --dataSource src/database/data-source.ts",
+    "migration:run": "typeorm-ts-node-commonjs migration:run --dataSource src/database/data-source.ts",
+    "migration:revert": "typeorm-ts-node-commonjs migration:revert --dataSource src/database/data-source.ts",
+    "check-migrations": "typeorm-ts-node-commonjs migration:run --dataSource src/database/data-source.ts --dry-run 2>&1 | grep -q 'No pending migrations' && echo 'OK' || (echo 'Pending migrations found' && exit 1)"
   },
   "dependencies": {
     "@nestjs/bull": "^11.0.4",
@@ -40,6 +44,7 @@
     "bull": "^4.16.5",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
+    "handlebars": "^4.7.8",
     "helmet": "^8.1.0",
     "ioredis": "^5.9.3",
     "joi": "^17.13.3",
@@ -65,6 +70,7 @@
     "@swc/cli": "^0.6.0",
     "@swc/core": "^1.10.7",
     "@types/bcrypt": "^6.0.0",
+    "@types/handlebars": "^4.1.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/bull": "^3.15.9",
     "@types/express": "^5.0.0",

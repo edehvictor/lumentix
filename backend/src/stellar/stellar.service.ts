@@ -381,6 +381,41 @@ export class StellarService implements OnModuleDestroy {
   }
 
   /**
+   * Merge an escrow account into a destination account.
+   * Sends all remaining XLM balance to `destinationPublicKey` and permanently
+   * closes the escrow account. Should be called after all refunds succeed.
+   *
+   * @param escrowSecret          Decrypted secret key of the escrow account
+   * @param destinationPublicKey  Platform (or organizer) account to receive residual XLM
+   */
+  async mergeAccount(
+    escrowSecret: string,
+    destinationPublicKey: string,
+  ): Promise<Horizon.HorizonApi.SubmitTransactionResponse> {
+    this.logger.debug(
+      `mergeAccount: destination=${destinationPublicKey}`,
+    );
+
+    const escrowKeypair = Keypair.fromSecret(escrowSecret);
+    const escrowAccount = await this.server.loadAccount(
+      escrowKeypair.publicKey(),
+    );
+
+    const tx = new TransactionBuilder(escrowAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(
+        Operation.accountMerge({ destination: destinationPublicKey }),
+      )
+      .setTimeout(30)
+      .build();
+
+    tx.sign(escrowKeypair);
+    return this.server.submitTransaction(tx);
+  }
+
+  /**
    * Get the XLM balance of an account.
    */
   async getXlmBalance(publicKey: string): Promise<string> {
