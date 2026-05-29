@@ -1,6 +1,10 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -19,6 +23,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { BruteForceService } from '../common/services/brute-force.service';
 import { ListAdminEventsDto } from './dto/list-admin-events.dto';
 import { ListAdminUsersDto } from './dto/list-admin-users.dto';
+import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
 import { Roles } from './roles.decorator';
 import { RolesGuard } from './roles.guard';
 import { AdminService } from './admin.service';
@@ -40,135 +45,88 @@ export class AdminController {
   ) {}
 
   @Patch('security/unlock-ip/:ip')
-  @ApiOperation({
-    summary: 'Unlock an IP address',
-    description:
-      'Authenticated admin endpoint. Removes a brute-force lockout for the specified IP address.',
-  })
+  @ApiOperation({ summary: 'Unlock an IP address' })
   @ApiParam({ name: 'ip', description: 'Locked IP address' })
   @ApiResponse({ status: 200, description: 'IP unlocked successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
   unlockIp(@Param('ip') ip: string) {
     return this.bruteForceService.unlock(ip);
   }
 
   @Patch('events/:id/approve')
-  @ApiOperation({
-    summary: 'Approve an event',
-    description:
-      'Authenticated admin endpoint. Publishes an event that is ready for approval.',
-  })
-  @ApiParam({ name: 'id', description: 'Event UUID' })
+  @ApiOperation({ summary: 'Approve an event' })
   @ApiResponse({ status: 200, description: 'Event approved successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
-  @ApiResponse({ status: 404, description: 'Event not found' })
   approveEvent(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.approveEvent(id);
   }
 
   @Patch('events/:id/suspend')
-  @ApiOperation({
-    summary: 'Suspend an event',
-    description:
-      'Authenticated admin endpoint. Suspends an event, preventing further registrations or payments.',
-  })
-  @ApiParam({ name: 'id', description: 'Event UUID' })
+  @ApiOperation({ summary: 'Suspend an event' })
   @ApiResponse({ status: 200, description: 'Event suspended successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
-  @ApiResponse({ status: 404, description: 'Event not found' })
   suspendEvent(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.suspendEvent(id);
   }
 
+  // ── Users ─────────────────────────────────────────────────────────────────
+
   @Get('users')
-  @ApiOperation({
-    summary: 'List platform users',
-    description:
-      'Authenticated admin endpoint. Returns a paginated list of platform users.',
-  })
+  @ApiOperation({ summary: 'List platform users' })
   @ApiResponse({ status: 200, description: 'Users retrieved successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
   listUsers(@Query() dto: ListAdminUsersDto) {
     return this.adminService.listUsers(dto);
   }
 
   @Get('users/:id')
-  @ApiOperation({
-    summary: 'Get user details',
-    description:
-      'Authenticated admin endpoint. Returns full details for a single user.',
-  })
-  @ApiParam({ name: 'id', description: 'User UUID' })
+  @ApiOperation({ summary: 'Get user details' })
   @ApiResponse({ status: 200, description: 'User retrieved successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
-  @ApiResponse({ status: 404, description: 'User not found' })
   getUser(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.getUserById(id);
   }
 
+  @Patch('users/:id')
+  @ApiOperation({ summary: 'Update user (role, settings)' })
+  @ApiResponse({ status: 200, description: 'User updated successfully' })
+  updateUser(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateAdminUserDto,
+  ) {
+    return this.adminService.updateUser(id, dto);
+  }
+
+  @Delete('users/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Soft-delete a user' })
+  @ApiResponse({ status: 204, description: 'User soft-deleted' })
+  softDeleteUser(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.softDeleteUser(id);
+  }
+
   @Patch('users/:id/unblock')
-  @ApiOperation({
-    summary: 'Unblock a user',
-    description:
-      'Authenticated admin endpoint. Removes the blocked status from a user account.',
-  })
-  @ApiParam({ name: 'id', description: 'User UUID' })
+  @ApiOperation({ summary: 'Unblock a user' })
   @ApiResponse({ status: 200, description: 'User unblocked successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
-  @ApiResponse({ status: 404, description: 'User not found' })
   unblockUser(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.unblockUser(id);
   }
 
   @Patch('users/:id/block')
-  @ApiOperation({
-    summary: 'Block a user',
-    description:
-      'Authenticated admin endpoint. Blocks a user from accessing the platform.',
-  })
-  @ApiParam({ name: 'id', description: 'User UUID' })
+  @ApiOperation({ summary: 'Block a user' })
   @ApiResponse({ status: 200, description: 'User blocked successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
-  @ApiResponse({ status: 404, description: 'User not found' })
   blockUser(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.blockUser(id);
   }
 
+  // ── Events ────────────────────────────────────────────────────────────────
+
   @Get('events')
-  @ApiOperation({
-    summary: 'List all events',
-    description:
-      'Authenticated admin endpoint. Returns a paginated list of all events across the platform.',
-  })
+  @ApiOperation({ summary: 'List all events' })
   @ApiResponse({ status: 200, description: 'Events retrieved successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
   listAllEvents(@Query() dto: ListAdminEventsDto) {
     return this.adminService.listAllEvents(dto);
   }
 
+  // ── Role Requests ─────────────────────────────────────────────────────────
+
   @Get('role-requests')
-  @ApiOperation({
-    summary: 'List role upgrade requests',
-    description:
-      'Authenticated admin endpoint. Returns paginated role upgrade requests with an optional status filter.',
-  })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    enum: ['pending', 'approved', 'rejected'],
-    description: 'Optional role request status filter',
-  })
-  @ApiResponse({ status: 200, description: 'Role requests retrieved successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
+  @ApiOperation({ summary: 'List role upgrade requests' })
   listRoleRequests(
     @Query() paginationDto: PaginationDto,
     @Query('status') status?: RoleRequestStatus,
@@ -177,54 +135,21 @@ export class AdminController {
   }
 
   @Patch('role-requests/:id/approve')
-  @ApiOperation({
-    summary: 'Approve role request',
-    description:
-      'Authenticated admin endpoint. Approves a pending role upgrade request.',
-  })
-  @ApiParam({ name: 'id', description: 'Role request UUID' })
-  @ApiResponse({ status: 200, description: 'Role request approved successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
-  @ApiResponse({ status: 404, description: 'Role request not found' })
+  @ApiOperation({ summary: 'Approve role request' })
   approveRoleRequest(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.approveRoleRequest(id);
   }
 
   @Patch('role-requests/:id/reject')
-  @ApiOperation({
-    summary: 'Reject role request',
-    description:
-      'Authenticated admin endpoint. Rejects a pending role upgrade request.',
-  })
-  @ApiParam({ name: 'id', description: 'Role request UUID' })
-  @ApiResponse({ status: 200, description: 'Role request rejected successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
-  @ApiResponse({ status: 404, description: 'Role request not found' })
+  @ApiOperation({ summary: 'Reject role request' })
   rejectRoleRequest(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.rejectRoleRequest(id);
   }
 
+  // ── Stellar ───────────────────────────────────────────────────────────────
+
   @Get('stellar/platform-balance')
-  @ApiOperation({
-    summary: 'Get platform Stellar account balance',
-    description:
-      'Returns available, reserved, and minimum required XLM balance for the platform account.',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Platform balance retrieved successfully',
-    schema: {
-      properties: {
-        available: { type: 'string', example: '100.0000000' },
-        reserved: { type: 'string', example: '1.5000000' },
-        minimumRequired: { type: 'string', example: '2.5000000' },
-      },
-    },
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
+  @ApiOperation({ summary: 'Get platform Stellar account balance' })
   getPlatformBalance() {
     return this.stellarService.getPlatformBalanceInfo();
   }
