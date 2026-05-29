@@ -5944,7 +5944,8 @@ fn test_modifying_details_post_publish_correctly_surfaces_panic() {
 
 /// Helper: find the first ContractEvent whose first topic symbol equals `needle`.
 /// Returns the raw data ScVal for further inspection.
-fn find_event_by_topic<'a>(
+/// Used by both the #539 (evtmeta) and #541 (capchng) test suites.
+fn find_event_by_topic(
     env: &Env,
     needle: &[u8],
 ) -> Option<xdr::ScVal> {
@@ -6215,4 +6216,225 @@ fn test_event_metadata_updated_successive_updates_emit_independent_events_with_f
     assert_eq!(timestamps.len(), 2, "Two successive updates must emit exactly two events");
     assert_eq!(timestamps[0], 1000, "First event time_updated must be 1000");
     assert_eq!(timestamps[1], 2000, "Second event time_updated must be 2000");
+}
+
+// ============================================================================
+// ISSUE #541 – EventCapacityChanged EMISSION FIELD-LEVEL TESTS
+// Verifies that EventCapacityChanged carries the correct
+// (event_id, old_capacity, new_capacity) values and is NOT emitted on error
+// paths. Complements the existing business-logic test_set_event_capacity which
+// does not inspect the event at all.
+// ============================================================================
+
+/// EventCapacityChanged is emitted when capacity is successfully increased.
+#[test]
+fn test_event_capacity_changed_emitted_on_increase() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+
+    client.set_event_capacity(&organizer, &event_id, &200u32);
+
+    assert!(
+        find_event_by_topic(&env, b"capchng").is_some(),
+        "EventCapacityChanged must be emitted when capacity is successfully increased"
+    );
+}
+
+/// EventCapacityChanged field[0] carries the correct event_id.
+#[test]
+fn test_event_capacity_changed_emits_correct_event_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+
+    client.set_event_capacity(&organizer, &event_id, &300u32);
+
+    let data = find_event_by_topic(&env, b"capchng")
+        .expect("EventCapacityChanged not emitted");
+
+    if let xdr::ScVal::Vec(Some(fields)) = data {
+        let emitted_id = match &fields[0] {
+            xdr::ScVal::U64(v) => *v,
+            other => panic!("expected U64 for event_id, got {:?}", other),
+        };
+        assert_eq!(
+            emitted_id, event_id,
+            "field[0] (event_id) must equal the ID of the updated event"
+        );
+    } else {
+        panic!("EventCapacityChanged data must be a Vec");
+    }
+}
+
+/// EventCapacityChanged field[1] carries old_capacity (the original max_tickets).
+/// create_and_publish_event uses 50 as max_tickets.
+#[test]
+fn test_event_capacity_changed_emits_correct_old_capacity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    // create_and_publish_event creates the event with max_tickets = 50
+    let expected_old: u32 = 50;
+
+    client.set_event_capacity(&organizer, &event_id, &250u32);
+
+    let data = find_event_by_topic(&env, b"capchng")
+        .expect("EventCapacityChanged not emitted");
+
+    if let xdr::ScVal::Vec(Some(fields)) = data {
+        let old_cap = match &fields[1] {
+            xdr::ScVal::U32(v) => *v,
+            other => panic!("expected U32 for old_capacity, got {:?}", other),
+        };
+        assert_eq!(
+            old_cap, expected_old,
+            "field[1] (old_capacity) must equal max_tickets before the call"
+        );
+    } else {
+        panic!("EventCapacityChanged data must be a Vec");
+    }
+}
+
+/// EventCapacityChanged field[2] carries new_capacity (the value passed into the call).
+#[test]
+fn test_event_capacity_changed_emits_correct_new_capacity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    let requested_new: u32 = 400;
+
+    client.set_event_capacity(&organizer, &event_id, &requested_new);
+
+    let data = find_event_by_topic(&env, b"capchng")
+        .expect("EventCapacityChanged not emitted");
+
+    if let xdr::ScVal::Vec(Some(fields)) = data {
+        let new_cap = match &fields[2] {
+            xdr::ScVal::U32(v) => *v,
+            other => panic!("expected U32 for new_capacity, got {:?}", other),
+        };
+        assert_eq!(
+            new_cap, requested_new,
+            "field[2] (new_capacity) must equal the value passed to set_event_capacity"
+        );
+    } else {
+        panic!("EventCapacityChanged data must be a Vec");
+    }
+}
+
+/// No EventCapacityChanged event is emitted when the caller is not the organizer.
+#[test]
+fn test_event_capacity_changed_not_emitted_on_unauthorized_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+
+    let result = client.try_set_event_capacity(&attacker, &event_id, &999u32);
+    assert_eq!(
+        result,
+        Err(Ok(LumentixError::Unauthorized)),
+        "non-organizer call must return Unauthorized"
+    );
+
+    assert!(
+        find_event_by_topic(&env, b"capchng").is_none(),
+        "EventCapacityChanged must NOT be emitted when authorization fails"
+    );
+}
+
+/// No EventCapacityChanged event is emitted when new_capacity < tickets_sold.
+#[test]
+fn test_event_capacity_changed_not_emitted_when_capacity_below_tickets_sold() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    // Create event with max 5 tickets
+    let event_id = client.create_event(
+        &organizer,
+        &String::from_str(&env, "Capacity Test"),
+        &String::from_str(&env, "Desc"),
+        &String::from_str(&env, "Loc"),
+        &1000u64,
+        &2000u64,
+        &100i128,
+        &5u32,
+    );
+    client.update_event_status(&event_id, &EventStatus::Published, &organizer);
+
+    // Sell 3 tickets
+    client.purchase_ticket(&buyer, &event_id, &100i128);
+    client.purchase_ticket(&buyer, &event_id, &100i128);
+    client.purchase_ticket(&buyer, &event_id, &100i128);
+
+    // Try to reduce capacity to 2 (below 3 sold) — must fail
+    let result = client.try_set_event_capacity(&organizer, &event_id, &2u32);
+    assert_eq!(
+        result,
+        Err(Ok(LumentixError::CapacityExceeded)),
+        "reducing capacity below tickets_sold must return CapacityExceeded"
+    );
+
+    assert!(
+        find_event_by_topic(&env, b"capchng").is_none(),
+        "EventCapacityChanged must NOT be emitted when the call fails with CapacityExceeded"
+    );
+}
+
+/// Successive capacity changes emit independent EventCapacityChanged events, each
+/// carrying the correct old/new values relative to that specific call.
+#[test]
+fn test_event_capacity_changed_successive_calls_emit_independent_events_with_correct_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    // create_and_publish_event starts at max_tickets = 50
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+
+    // First change: 50 → 200
+    client.set_event_capacity(&organizer, &event_id, &200u32);
+    // Second change: 200 → 150
+    client.set_event_capacity(&organizer, &event_id, &150u32);
+
+    // Collect all "capchng" events in emission order
+    let mut pairs: Vec<(u32, u32)> = Vec::new(); // (old, new)
+    for xdr_event in env.events().all().events() {
+        if let xdr::ContractEventBody::V0(body) = &xdr_event.body {
+            if let Some(xdr::ScVal::Symbol(sym)) = body.topics.first() {
+                if sym.as_slice() == b"capchng" {
+                    if let xdr::ScVal::Vec(Some(fields)) = &body.data {
+                        let old = match &fields[1] { xdr::ScVal::U32(v) => *v, _ => 0 };
+                        let new = match &fields[2] { xdr::ScVal::U32(v) => *v, _ => 0 };
+                        pairs.push((old, new));
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(pairs.len(), 2, "two successive capacity changes must emit exactly two events");
+    assert_eq!(pairs[0], (50, 200), "first event: old=50 new=200");
+    assert_eq!(pairs[1], (200, 150), "second event: old=200 new=150");
 }
