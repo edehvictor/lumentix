@@ -3,6 +3,7 @@ import './globals.css';
 import Navbar from '@/components/Navbar';
 import { Providers } from './providers';
 import AnalyticsProvider from '@/components/AnalyticsProvider';
+import ToastContainer from '@/components/Toast';
 
 export const metadata: Metadata = {
   title: 'Lumentix – Stellar Event Platform',
@@ -17,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <AnalyticsProvider>
             <Navbar />
             {children}
+            <ToastContainer />
           </AnalyticsProvider>
         </Providers>
       </body>

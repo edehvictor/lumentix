@@ -57,6 +57,9 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true, default: null })
   balancesUpdatedAt: Date | null;
 
+  @Column({ default: false })
+  emailOptOut: boolean;
+
   @Column({
     type: 'jsonb',
     default: {
@@ -74,6 +77,15 @@ export class User {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  @Column({ default: false })
+  emailVerified: boolean;
+
+  @Column({ nullable: true, type: 'varchar' })
+  emailVerificationToken: string | null;
+
+  @Column({ nullable: true, type: 'timestamptz' })
+  emailVerificationTokenExpiresAt: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true, default: null })
   deletedAt: Date | null;
