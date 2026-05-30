@@ -3,24 +3,26 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 
-@Entity('refresh_tokens')
-export class RefreshToken {
+@Entity('wallet_challenges')
+export class WalletChallenge {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Index()
   @Column()
   userId: string;
 
-  @Column({ unique: true })
-  token: string;
+  @Column({ type: 'varchar' })
+  nonce: string;
+
+  @Column({ default: false })
+  used: boolean;
 
   @Column({ type: 'timestamptz' })
   expiresAt: Date;
-
-  @Column({ default: false })
-  revoked: boolean;
 
   @CreateDateColumn()
   createdAt: Date;
