@@ -14,7 +14,10 @@ export class ListEventsDto {
   @IsString()
   organizerId?: string;
 
-  @ApiPropertyOptional({ description: 'Search by event title (case-insensitive)' })
+  @ApiPropertyOptional({
+    description:
+      'Full-text search across event title and description (PostgreSQL tsvector)',
+  })
   @IsOptional()
   @IsString()
   search?: string;

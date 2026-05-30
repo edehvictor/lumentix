@@ -119,6 +119,11 @@ export class Event {
   categories: Category[];
 
   /**
+   * Timestamp when the escrow account was merged (closed) after a full refund.
+   * NULL means the account has not been merged yet.
+   */
+  @Column({ type: 'timestamp', nullable: true, default: null })
+  mergedAt: Date | null;
    * Optional webhook URL for outbound payment status notifications.
    * When set, a signed POST request is sent on each payment status transition.
    */

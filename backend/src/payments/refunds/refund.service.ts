@@ -123,6 +123,49 @@ export class RefundService {
       },
     });
 
+    // 5. If all refunds succeeded and the escrow has not been merged yet,
+    //    merge the escrow account to sweep residual XLM to the platform wallet.
+    const allSucceeded =
+      results.length > 0 && results.every((r) => r.success);
+
+    if (allSucceeded && event.escrowSecretEncrypted) {
+      try {
+        const platformPublicKey =
+          process.env.PLATFORM_PUBLIC_KEY ?? '';
+
+        if (platformPublicKey) {
+          await this.stellarService.mergeAccount(
+            escrowSecret,
+            platformPublicKey,
+          );
+
+          // Null out escrow credentials and record the merge timestamp
+          await this.eventsRepository.update(eventId, {
+            escrowPublicKey: null,
+            escrowSecretEncrypted: null,
+            mergedAt: new Date(),
+          });
+
+          this.logger.log(
+            `Escrow account merged for event=${eventId} → ${platformPublicKey}`,
+          );
+        } else {
+          this.logger.warn(
+            `PLATFORM_PUBLIC_KEY not set — skipping escrow merge for event=${eventId}`,
+          );
+        }
+      } catch (mergeErr: unknown) {
+        const reason =
+          mergeErr instanceof Error
+            ? mergeErr.message
+            : 'Unknown error during escrow merge';
+        this.logger.error(
+          `Escrow merge failed for event=${eventId}: ${reason}`,
+        );
+        // Non-fatal: refunds already succeeded, just log the failure
+      }
+    }
+
     return results;
   }
 
