@@ -7,8 +7,6 @@ import {
   Post,
   Query,
   Req,
-  Res,
-  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -19,16 +17,13 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Throttle, seconds } from '@nestjs/throttler';
-import { Request } from 'express';
-import { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
-import { BruteForceGuard } from '../common/guards/brute-force.guard';
-import { BruteForceService } from '../common/services/brute-force.service';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { LoginDto } from './dto/login.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { LocalAuthGuard } from './guards/local-auth.guard';
 import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { WalletChallengeResponseDto } from './dto/wallet-challenge.dto';
 import { WalletVerifyDto } from './dto/wallet-challenge.dto';
@@ -37,138 +32,114 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { GoogleAuthGuard } from './guards/google-auth.guard';
 
 @ApiTags('Auth')
-@ApiResponse({ status: 429, description: 'Too many requests' })
 @Controller('auth')
 export class AuthController {
-  constructor(
-    private readonly authService: AuthService,
-    private readonly bruteForceService: BruteForceService,
-  ) {}
+  constructor(private readonly authService: AuthService) {}
 
   @Post('register')
-  @Throttle({ global: { ttl: seconds(60), limit: 10 } })
-  @Throttle({ short: { ttl: seconds(60), limit: 5 } })
-  @ApiOperation({
-    summary: 'Register a new user',
-    description: 'Public. Creates a new user account.',
-  })
-  @ApiBody({
-    type: RegisterDto,
-    examples: {
-      standard: {
-        summary: 'Standard user',
-        value: { email: 'user@example.com', password: 'password123' },
-      },
-      admin: {
-        summary: 'Admin user',
-        value: {
-          email: 'admin@example.com',
-          password: 'password123',
-          role: 'ADMIN',
-        },
-      },
-    },
-  })
-  @ApiResponse({ status: 201, description: 'User successfully registered' })
-  @ApiResponse({ status: 400, description: 'Invalid request or email already exists' })
-  register(@Body() dto: RegisterDto) {
+  @Throttle({ default: { limit: 10, ttl: 900_000 } }) // 10 per 15 min
+  @ApiOperation({ summary: 'Register a new user' })
+  @ApiResponse({ status: 201, description: 'User registered successfully' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 409, description: 'Email already exists' })
+  async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
   @Post('login')
-  @UseGuards(BruteForceGuard)
+  @UseGuards(LocalAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 900_000 } }) // 10 per 15 min
   @HttpCode(HttpStatus.OK)
-  @Throttle({ global: { ttl: seconds(60), limit: 5 } })
-  @Throttle({ short: { ttl: seconds(60), limit: 5 } })
-  @ApiOperation({
-    summary: 'Login',
-    description: 'Public. Authenticates a user and returns access credentials.',
-  })
-  @ApiResponse({ status: 200, description: 'Login successful' })
-  @ApiResponse({ status: 401, description: 'Invalid credentials' })
-  async login(@Body() dto: LoginDto, @Req() req: Request) {
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-
-    try {
-      const result = await this.authService.login(dto);
-      await this.bruteForceService.reset(ip);
-      return result;
-    } catch (error) {
-      if (error instanceof UnauthorizedException) {
-        await this.bruteForceService.recordFailedAttempt(ip);
-      }
-
-      throw error;
-    }
+  @ApiOperation({ summary: 'Authenticate user with email/password' })
+  @ApiBody({ type: LoginDto })
+  @ApiResponse({ status: 200, description: 'JWT tokens' })
+  @ApiResponse({ status: 401, description: 'Invalid credentials' })    async login(@Req() req: AuthenticatedRequest) {
+    return this.authService.login(req.user as any);
   }
 
   @Post('forgot-password')
-  @Throttle({ global: { ttl: seconds(3600), limit: 3 } })
-  @ApiOperation({
-    summary: 'Request password reset email',
-    description:
-      'Public. Always returns success wording to avoid email enumeration.',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Password reset email sent if the account exists',
-  })
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.authService.forgotPassword(dto);
+  @Throttle({ default: { limit: 10, ttl: 900_000 } }) // 10 per 15 min
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send password reset email' })
+  @ApiResponse({ status: 200, description: 'Reset email sent if email exists' })
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto.email);
   }
 
   @Post('reset-password')
-  @ApiOperation({
-    summary: 'Reset password with token',
-    description:
-      'Public. Resets a user password using a valid password reset token.',
-  })
-  @ApiResponse({ status: 200, description: 'Password reset successful' })
-  @ApiResponse({ status: 400, description: 'Invalid, expired, or used token' })
-  resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.authService.resetPassword(dto);
+  @Throttle({ default: { limit: 3, ttl: 3_600_000 } }) // 3 per hour
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reset password with token' })
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.newPassword);
   }
 
   @Post('refresh')
+  @SkipThrottle()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Refresh access token',
-    description:
-      'Public. Exchanges a valid refresh token for a new access token and refresh token pair.',
-  })
-  @ApiResponse({ status: 200, description: 'Token refreshed successfully' })
-  @ApiResponse({ status: 401, description: 'Invalid or expired refresh token' })
-  refresh(@Body() dto: RefreshTokenDto) {
+  @ApiOperation({ summary: 'Refresh access token' })
+  @ApiResponse({ status: 200, description: 'New JWT tokens' })
+  @ApiResponse({ status: 401, description: 'Invalid refresh token' })
+  async refresh(@Body() dto: RefreshTokenDto) {
     return this.authService.refresh(dto.refreshToken);
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  @SkipThrottle()
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get current authenticated user' })
+  @ApiResponse({ status: 200, description: 'Current user profile' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getMe(@Req() req: AuthenticatedRequest) {
+    return this.authService.getProfile(req.user.id);
   }
 
   @Post('logout')
   @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Logout',
-    description:
-      'Authenticated. Revokes the provided refresh token for the current user.',
-  })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Logout and invalidate refresh token' })
   @ApiResponse({ status: 200, description: 'Logged out successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized or invalid token' })
-  logout(@Body() dto: RefreshTokenDto, @Req() req: AuthenticatedRequest) {
-    return this.authService.logout(req.user.id, dto.refreshToken);
+  async logout(@Req() req: AuthenticatedRequest, @Body() dto: RefreshTokenDto) {
+    await this.authService.logout(req.user.id, dto?.refreshToken);
+    return { message: 'Logged out' };
   }
 
-  @Get('google')
-  @UseGuards(GoogleAuthGuard)
-  @ApiOperation({ summary: 'Google OAuth redirect' })
-  googleAuth() {}
+  // ── Email verification ──────────────────────────────────────────────────
 
-  @Get('google/callback')
-  @UseGuards(GoogleAuthGuard)
-  @ApiOperation({ summary: 'Google OAuth callback' })
-  async googleCallback(@Req() req: any, @Res() res: any) {
-    const tokens = await this.authService.findOrCreateGoogleUser(req.user);
-    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?accessToken=${tokens.accessToken}&refreshToken=${tokens.refreshToken}`;
-    return res.redirect(redirectUrl);
+  @Post('verify-email')
+  @Throttle({ default: { limit: 5, ttl: 900_000 } }) // 5 per 15 min
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify email address with token' })
+  async verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.authService.verifyEmail(dto.token);
+  }
+
+  @Post('resend-verification')
+  @Throttle({ default: { limit: 3, ttl: 3_600_000 } }) // 3 per hour
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Resend verification email' })
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerification(dto.email);
+  }
+
+  // ── Wallet challenge ────────────────────────────────────────────────────
+
+  @Post('wallet-challenge')
+  @SkipThrottle()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Request a wallet signing challenge' })
+  async requestWalletChallenge(@Body() dto: RequestWalletChallengeDto) {
+    return this.authService.requestWalletChallenge(dto.publicKey);
+  }
+
+  @Post('wallet-login')
+  @Throttle({ default: { limit: 10, ttl: 900_000 } }) // 10 per 15 min
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Login or link wallet with signed challenge' })
+  async walletLogin(@Body() dto: { publicKey: string; signature: string }) {
+    return this.authService.walletLogin(dto.publicKey, dto.signature);
   }
 
   // ─── Wallet Challenge ────────────────────────────────────────────────────────
