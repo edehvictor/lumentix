@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use soroban_sdk::{symbol_short, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{symbol_short, Address, BytesN, Env, String, Symbol, Vec};
 
 /// A type for transfer of event
 pub struct TransferEvent;
@@ -703,6 +703,258 @@ impl ReputationUpdated {
         env.events().publish(
             (symbol_short!("repupdt"),),
             (organizer, reputation_score, average_rating_x100, total_reviews),
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UPGRADE MECHANISM EVENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emitted when an upgrade proposal is created
+pub struct UpgradeProposed;
+
+impl UpgradeProposed {
+    pub fn emit(
+        env: &Env,
+        proposal_id: u64,
+        proposer: Address,
+        new_wasm_hash: BytesN<32>,
+        description: String,
+        voting_deadline: u64,
+    ) {
+        env.events().publish(
+            (symbol_short!("upgprop"),),
+            (proposal_id, proposer, new_wasm_hash, description, voting_deadline),
+        );
+    }
+}
+
+/// Emitted when a vote is cast on an upgrade proposal
+pub struct UpgradeVoteCast;
+
+impl UpgradeVoteCast {
+    pub fn emit(
+        env: &Env,
+        proposal_id: u64,
+        voter: Address,
+        vote_yes: bool,
+        total_yes: u32,
+        total_no: u32,
+    ) {
+        env.events().publish(
+            (symbol_short!("upgvote"),),
+            (proposal_id, voter, vote_yes, total_yes, total_no),
+        );
+    }
+}
+
+/// Emitted when an upgrade proposal is executed
+pub struct UpgradeExecuted;
+
+impl UpgradeExecuted {
+    pub fn emit(env: &Env, proposal_id: u64, executor: Address, new_wasm_hash: BytesN<32>) {
+        env.events().publish(
+            (symbol_short!("upgexec"),),
+            (proposal_id, executor, new_wasm_hash),
+        );
+    }
+}
+
+/// Emitted when governance config is updated
+pub struct UpgradeGovernanceConfigUpdated;
+
+impl UpgradeGovernanceConfigUpdated {
+    pub fn emit(
+        env: &Env,
+        admin: Address,
+        voting_period_seconds: u64,
+        required_approval_percentage: u32,
+        member_count: u32,
+    ) {
+        env.events().publish(
+            (symbol_short!("upgcfg"),),
+            (admin, voting_period_seconds, required_approval_percentage, member_count),
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CARBON OFFSET EVENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emitted when a carbon footprint is calculated for an event
+pub struct CarbonFootprintCalculated;
+
+impl CarbonFootprintCalculated {
+    pub fn emit(
+        env: &Env,
+        event_id: u64,
+        total_footprint_kg: i128,
+        venue_kg: i128,
+        attendance_kg: i128,
+        travel_kg: i128,
+    ) {
+        env.events().publish(
+            (symbol_short!("carboncal"),),
+            (event_id, total_footprint_kg, venue_kg, attendance_kg, travel_kg),
+        );
+    }
+}
+
+/// Emitted when a carbon offset is purchased
+pub struct CarbonOffsetPurchased;
+
+impl CarbonOffsetPurchased {
+    pub fn emit(
+        env: &Env,
+        purchase_id: u64,
+        event_id: u64,
+        purchaser: Address,
+        offset_amount_kg: i128,
+        cost: i128,
+        project_id: String,
+    ) {
+        env.events().publish(
+            (symbol_short!("carbonpur"),),
+            (purchase_id, event_id, purchaser, offset_amount_kg, cost, project_id),
+        );
+    }
+}
+
+/// Emitted when environmental impact is tracked/updated
+pub struct EnvironmentalImpactUpdated;
+
+impl EnvironmentalImpactUpdated {
+    pub fn emit(
+        env: &Env,
+        event_id: u64,
+        total_footprint_kg: i128,
+        total_offset_kg: i128,
+        net_impact_kg: i128,
+        neutral: bool,
+    ) {
+        env.events().publish(
+            (symbol_short!("envimp"),),
+            (event_id, total_footprint_kg, total_offset_kg, net_impact_kg, neutral),
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IDENTITY VERIFICATION EVENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emitted when an identity credential is issued
+pub struct IdentityCredentialIssued;
+
+impl IdentityCredentialIssued {
+    pub fn emit(
+        env: &Env,
+        credential_id: u64,
+        subject: Address,
+        provider: crate::types::IdentityProvider,
+        level: u32,
+        expires_at: u64,
+    ) {
+        env.events().publish(
+            (symbol_short!("idcrdiss"),),
+            (credential_id, subject, provider, level, expires_at),
+        );
+    }
+}
+
+/// Emitted when a blockchain identity is verified
+pub struct BlockchainIdentityVerified;
+
+impl BlockchainIdentityVerified {
+    pub fn emit(
+        env: &Env,
+        credential_id: u64,
+        subject: Address,
+        provider: crate::types::IdentityProvider,
+        verified: bool,
+    ) {
+        env.events().publish(
+            (symbol_short!("idverif"),),
+            (credential_id, subject, provider, verified),
+        );
+    }
+}
+
+/// Emitted when an identity credential is revoked
+pub struct IdentityCredentialRevoked;
+
+impl IdentityCredentialRevoked {
+    pub fn emit(
+        env: &Env,
+        credential_id: u64,
+        subject: Address,
+        admin: Address,
+    ) {
+        env.events().publish(
+            (symbol_short!("idrevok"),),
+            (credential_id, subject, admin),
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CROSS-CHAIN TICKET PORTABILITY EVENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emitted when a cross-chain transfer is initiated
+pub struct CrossChainTransferInitiated;
+
+impl CrossChainTransferInitiated {
+    pub fn emit(
+        env: &Env,
+        transfer_id: u64,
+        ticket_id: u64,
+        event_id: u64,
+        sender: Address,
+        source_chain: String,
+        target_chain: String,
+    ) {
+        env.events().publish(
+            (symbol_short!("cctinit"),),
+            (transfer_id, ticket_id, event_id, sender, source_chain, target_chain),
+        );
+    }
+}
+
+/// Emitted when a bridge transaction is validated
+pub struct BridgeTransactionValidated;
+
+impl BridgeTransactionValidated {
+    pub fn emit(
+        env: &Env,
+        transfer_id: u64,
+        tx_hash: String,
+        valid: bool,
+        validator: Address,
+    ) {
+        env.events().publish(
+            (symbol_short!("brgval"),),
+            (transfer_id, tx_hash, valid, validator),
+        );
+    }
+}
+
+/// Emitted when a cross-chain transfer is completed
+pub struct CrossChainTransferCompleted;
+
+impl CrossChainTransferCompleted {
+    pub fn emit(
+        env: &Env,
+        transfer_id: u64,
+        ticket_id: u64,
+        recipient: Address,
+        target_chain: String,
+    ) {
+        env.events().publish(
+            (symbol_short!("cctcomp"),),
+            (transfer_id, ticket_id, recipient, target_chain),
         );
     }
 }

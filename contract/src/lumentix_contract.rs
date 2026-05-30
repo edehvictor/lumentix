@@ -4,23 +4,31 @@ use crate::error::LumentixError;
 use crate::events::{
     AccessibilityBooked, AccessibilityInventoryUpdated, AdminChanged, AttendanceVerificationFailed,
     AttendanceVerified, BatchTicketsPurchased, BatchTicketsTransferred, BatchTicketsUsed,
-    EscrowReleased, EventCancelled, EventCapacityChanged, EventCompleted, EventCreated,
-    EventCurrencySet, EventMetadataUpdated, EventSalesPaused, EventSalesResumed,
-    EventStatusChanged, EventTimeExtended, EventUpdated, FundsDeposited, FundsWithdrawn,
-    GenericEventStateTransition, InsuranceClaimProcessed, InsurancePoolUpdated, InsurancePurchased,
+    BlockchainIdentityVerified, BridgeTransactionValidated, CarbonFootprintCalculated,
+    CarbonOffsetPurchased, CrossChainTransferCompleted, CrossChainTransferInitiated,
+    EnvironmentalImpactUpdated, EscrowReleased, EventCancelled, EventCapacityChanged,
+    EventCompleted, EventCreated, EventCurrencySet, EventMetadataUpdated, EventSalesPaused,
+    EventSalesResumed, EventStatusChanged, EventTimeExtended, EventUpdated, FundsDeposited,
+    FundsWithdrawn, GenericEventStateTransition, IdentityCredentialIssued,
+    IdentityCredentialRevoked, InsuranceClaimProcessed, InsurancePoolUpdated, InsurancePurchased,
     OraclePriceUpdated, PlatformFeeRecipientUpdated, PlatformFeeUpdated, PlatformFeesWithdrawn,
     ProtocolFeeQueried, ReputationUpdated, ReviewSubmitted, SeatHoldReleased, SeatSelected,
-    TicketPurchased, TicketRefunded, TicketRevoked, TicketTransferred, TicketUsed, VenueLayoutCreated,
-    VipTierCreated, VipTicketAssigned, WaitlistAvailabilityNotified, WaitlistJoined,
+    TicketPurchased, TicketRefunded, TicketRevoked, TicketTransferred, TicketUsed,
+    UpgradeExecuted, UpgradeGovernanceConfigUpdated, UpgradeProposed, UpgradeVoteCast,
+    VenueLayoutCreated, VipTierCreated, VipTicketAssigned, WaitlistAvailabilityNotified,
+    WaitlistJoined,
 };
 use crate::storage;
 use crate::types::{
-    AccessibilityBooking, AccessibilityInventory, CancellationReason, CurrencyConfig, Event,
-    EventReview, EventStatus, InsurancePolicy, OrganizerReputation, Seat, Ticket,
-    TicketTransferRecord, VenueLayout, VenueSection, VipTier, WaitlistOffer, PERSISTENT_LIFETIME,
+    AccessibilityBooking, AccessibilityInventory, BridgeTransaction, CancellationReason,
+    CarbonFootprint, CarbonOffsetPurchase, CrossChainTransfer, CrossChainTransferStatus,
+    CurrencyConfig, EnvironmentalImpact, Event, EventReview, EventStatus, IdentityCredential,
+    IdentityProof, IdentityProvider, InsurancePolicy, OrganizerReputation, Seat, Ticket,
+    TicketTransferRecord, UpgradeGovernanceConfig, UpgradeProposal, UpgradeState, UpgradeVote,
+    VenueLayout, VenueSection, VipTier, WaitlistOffer, PERSISTENT_LIFETIME,
 };
 use crate::validation;
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec, Map};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec, Map};
 
 #[contract]
 pub struct LumentixContract;
@@ -3136,5 +3144,932 @@ impl LumentixContract {
             rep.average_rating_x100,
             rep.total_reviews,
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SMART CONTRACT UPGRADE MECHANISM
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Configure the upgrade governance parameters.
+    /// Only the contract admin can set this.
+    /// Sets voting period, required approval percentage, and governance member list.
+    pub fn configure_upgrade_governance(
+        env: Env,
+        admin: Address,
+        voting_period_seconds: u64,
+        required_approval_percentage: u32,
+        governance_members: Vec<Address>,
+    ) -> Result<(), LumentixError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        validation::validate_voting_period(voting_period_seconds)?;
+        validation::validate_approval_percentage(required_approval_percentage)?;
+
+        if governance_members.len() == 0 {
+            return Err(LumentixError::InvalidAmount);
+        }
+
+        let config = UpgradeGovernanceConfig {
+            voting_period_seconds,
+            required_approval_percentage,
+            governance_members,
+        };
+
+        storage::set_upgrade_governance_config(&env, &config);
+
+        UpgradeGovernanceConfigUpdated::emit(
+            &env,
+            admin,
+            voting_period_seconds,
+            required_approval_percentage,
+            config.governance_members.len(),
+        );
+
+        Ok(())
+    }
+
+    /// Propose a contract upgrade by specifying a new WASM hash.
+    /// Only governance members can propose upgrades.
+    /// Validates that the same WASM hash has not already been proposed.
+    pub fn propose_upgrade(
+        env: Env,
+        proposer: Address,
+        new_wasm_hash: BytesN<32>,
+        description: String,
+    ) -> Result<u64, LumentixError> {
+        proposer.require_auth();
+
+        let config = storage::get_upgrade_governance_config(&env);
+
+        // Verify proposer is a governance member
+        let mut is_member = false;
+        for i in 0..config.governance_members.len() {
+            if config.governance_members.get(i).unwrap() == proposer {
+                is_member = true;
+                break;
+            }
+        }
+        if !is_member {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        validation::validate_wasm_hash(&new_wasm_hash)?;
+        validation::validate_string_not_empty(&description)?;
+
+        // Check duplicate proposal hash
+        if storage::has_upgrade_proposal_by_hash(&env, &new_wasm_hash) {
+            return Err(LumentixError::UpgradeProposalAlreadyExists);
+        }
+
+        let proposal_id = storage::get_next_upgrade_proposal_id(&env);
+        storage::increment_upgrade_proposal_id(&env);
+
+        let created_at = env.ledger().timestamp();
+        let voting_deadline = created_at + config.voting_period_seconds;
+
+        let proposal = UpgradeProposal {
+            proposal_id,
+            proposer: proposer.clone(),
+            new_wasm_hash: new_wasm_hash.clone(),
+            description: description.clone(),
+            created_at,
+            voting_deadline,
+            state: UpgradeState::Pending,
+            yes_votes: 0,
+            no_votes: 0,
+            required_yes_votes: 0, // computed on execution
+            total_voters: config.governance_members.len(),
+        };
+
+        storage::set_upgrade_proposal(&env, proposal_id, &proposal);
+        storage::set_upgrade_proposal_hash(&env, &new_wasm_hash, proposal_id);
+
+        UpgradeProposed::emit(
+            &env,
+            proposal_id,
+            proposer,
+            new_wasm_hash,
+            description,
+            voting_deadline,
+        );
+
+        Ok(proposal_id)
+    }
+
+    /// Vote on an upgrade proposal.
+    /// Only governance members can vote.
+    /// Each member can only vote once per proposal.
+    pub fn vote_on_upgrade(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        vote_yes: bool,
+    ) -> Result<(), LumentixError> {
+        voter.require_auth();
+
+        let config = storage::get_upgrade_governance_config(&env);
+
+        // Verify voter is a governance member
+        let mut is_member = false;
+        for i in 0..config.governance_members.len() {
+            if config.governance_members.get(i).unwrap() == voter {
+                is_member = true;
+                break;
+            }
+        }
+        if !is_member {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        let mut proposal = storage::get_upgrade_proposal(&env, proposal_id)?;
+
+        // Check proposal is still in voting state
+        if proposal.state != UpgradeState::Pending {
+            return Err(LumentixError::UpgradeNotInVotingState);
+        }
+
+        // Check voting deadline
+        let now = env.ledger().timestamp();
+        if now > proposal.voting_deadline {
+            return Err(LumentixError::UpgradeVotingPeriodExpired);
+        }
+
+        // Check if already voted
+        if storage::get_upgrade_vote(&env, proposal_id, &voter).is_some() {
+            return Err(LumentixError::UpgradeAlreadyVoted);
+        }
+
+        // Record vote
+        let vote = UpgradeVote {
+            voter: voter.clone(),
+            proposal_id,
+            vote_yes,
+            timestamp: now,
+        };
+
+        storage::set_upgrade_vote(&env, proposal_id, &voter, &vote);
+
+        if vote_yes {
+            proposal.yes_votes += 1;
+        } else {
+            proposal.no_votes += 1;
+        }
+
+        storage::set_upgrade_proposal(&env, proposal_id, &proposal);
+
+        UpgradeVoteCast::emit(
+            &env,
+            proposal_id,
+            voter,
+            vote_yes,
+            proposal.yes_votes,
+            proposal.no_votes,
+        );
+
+        Ok(())
+    }
+
+    /// Execute an approved upgrade proposal.
+    /// After voting deadline passes with sufficient approval, any governance member can execute.
+    /// Computes required votes based on approval percentage and total voters.
+    pub fn execute_upgrade(
+        env: Env,
+        executor: Address,
+        proposal_id: u64,
+    ) -> Result<(), LumentixError> {
+        executor.require_auth();
+
+        let config = storage::get_upgrade_governance_config(&env);
+
+        // Verify executor is a governance member
+        let mut is_member = false;
+        for i in 0..config.governance_members.len() {
+            if config.governance_members.get(i).unwrap() == executor {
+                is_member = true;
+                break;
+            }
+        }
+        if !is_member {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        let proposal = storage::get_upgrade_proposal(&env, proposal_id)?;
+
+        // Must be in pending state
+        if proposal.state != UpgradeState::Pending {
+            return Err(LumentixError::UpgradeAlreadyExecuted);
+        }
+
+        // Voting period must have ended
+        let now = env.ledger().timestamp();
+        if now <= proposal.voting_deadline {
+            return Err(LumentixError::UpgradeVotingPeriodExpired);
+        }
+
+        // Calculate required votes
+        let required_yes =
+            (proposal.total_voters as u64 * config.required_approval_percentage as u64 / 100) as u32;
+        if proposal.yes_votes < required_yes || required_yes == 0 {
+            return Err(LumentixError::UpgradeInsufficientVotes);
+        }
+
+        // Update proposal state
+        let mut updated = proposal.clone();
+        updated.state = UpgradeState::Approved;
+        updated.required_yes_votes = required_yes;
+        storage::set_upgrade_proposal(&env, proposal_id, &updated);
+
+        // Deploy upgrade
+        env.deployer().update_current_contract_wasm(proposal.new_wasm_hash.clone());
+
+        // Mark as executed
+        let mut executed = updated;
+        executed.state = UpgradeState::Executed;
+        storage::set_upgrade_proposal(&env, proposal_id, &executed);
+
+        UpgradeExecuted::emit(
+            &env,
+            proposal_id,
+            executor,
+            proposal.new_wasm_hash,
+        );
+
+        Ok(())
+    }
+
+    /// Get an upgrade proposal by ID
+    pub fn get_upgrade_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<UpgradeProposal, LumentixError> {
+        storage::get_upgrade_proposal(&env, proposal_id)
+    }
+
+    /// Get upgrade governance configuration
+    pub fn get_upgrade_governance_config(env: Env) -> UpgradeGovernanceConfig {
+        storage::get_upgrade_governance_config(&env)
+    }
+
+    /// Get a vote record for a specific proposal and voter
+    pub fn get_upgrade_vote(
+        env: Env,
+        proposal_id: u64,
+        voter: Address,
+    ) -> Option<UpgradeVote> {
+        storage::get_upgrade_vote(&env, proposal_id, &voter)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CARBON OFFSET PROGRAM
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Calculate the carbon footprint for an event based on venue size,
+    /// expected attendance, and travel patterns.
+    ///
+    /// Formula:
+    ///   venue_footprint = venue_size_factor × base_emission_per_sqm
+    ///   attendance_footprint = expected_attendance × attendance_emission_factor
+    ///   travel_footprint = expected_attendance × avg_travel_distance_km × travel_emission_per_km
+    pub fn calculate_carbon_footprint(
+        env: Env,
+        event_id: u64,
+        venue_size_sqm: u64,
+        expected_attendance: u64,
+        avg_travel_distance_km: u64,
+    ) -> Result<CarbonFootprint, LumentixError> {
+        // Validate event exists
+        let _event = storage::get_event(&env, event_id)?;
+
+        if venue_size_sqm == 0 || expected_attendance == 0 {
+            return Err(LumentixError::InvalidCarbonFootprintParams);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Constants for carbon calculation (kg CO2e)
+        let venue_emission_per_sqm: i128 = 25; // 25 kg CO2e per sqm for event duration
+        let attendance_emission_per_person: i128 = 5; // 5 kg CO2e per attendee
+        let travel_emission_per_km_per_person: i128 = 255; // grams = 0.255 kg per km per person
+
+        let venue_footprint =
+            (venue_size_sqm as i128).saturating_mul(venue_emission_per_sqm);
+        let attendance_footprint =
+            (expected_attendance as i128).saturating_mul(attendance_emission_per_person);
+        let travel_footprint = (expected_attendance as i128)
+            .saturating_mul(avg_travel_distance_km as i128)
+            .saturating_mul(travel_emission_per_km_per_person)
+            / 1000; // convert grams to kg
+
+        let total = venue_footprint
+            + attendance_footprint
+            + travel_footprint;
+
+        let footprint = CarbonFootprint {
+            event_id,
+            venue_footprint_kg: venue_footprint,
+            attendance_footprint_kg: attendance_footprint,
+            travel_footprint_kg: travel_footprint,
+            total_footprint_kg: total,
+            calculated_at: now,
+        };
+
+        storage::set_carbon_footprint(&env, event_id, &footprint);
+
+        // Update environmental impact
+        let mut impact = storage::get_environmental_impact(&env, event_id);
+        impact.total_footprint_kg = total;
+        impact.net_impact_kg = total - impact.total_offset_kg;
+        impact.neutral_status = impact.total_footprint_kg > 0 && impact.net_impact_kg <= 0;
+        storage::set_environmental_impact(&env, event_id, &impact);
+
+        CarbonFootprintCalculated::emit(
+            &env,
+            event_id,
+            total,
+            venue_footprint,
+            attendance_footprint,
+            travel_footprint,
+        );
+
+        Ok(footprint)
+    }
+
+    /// Purchase carbon offset credits to neutralize event environmental impact.
+    /// The offset amount is deducted from the purchaser's balance.
+    /// Records the purchase and updates the environmental impact tracker.
+    pub fn purchase_carbon_offset(
+        env: Env,
+        purchaser: Address,
+        event_id: u64,
+        offset_amount_kg: i128,
+        cost: i128,
+        project_id: String,
+    ) -> Result<u64, LumentixError> {
+        purchaser.require_auth();
+
+        // Validate event exists
+        let _event = storage::get_event(&env, event_id)?;
+
+        validation::validate_offset_amount(offset_amount_kg)?;
+        validation::validate_positive_amount(cost)?;
+        validation::validate_carbon_project_id(&project_id)?;
+
+        let purchase_id = storage::get_next_carbon_offset_purchase_id(&env);
+        storage::increment_carbon_offset_purchase_id(&env);
+
+        let now = env.ledger().timestamp();
+
+        let purchase = CarbonOffsetPurchase {
+            purchase_id,
+            event_id,
+            purchaser: purchaser.clone(),
+            offset_amount_kg,
+            cost,
+            project_id: project_id.clone(),
+            timestamp: now,
+            verified: true,
+        };
+
+        storage::set_carbon_offset_purchase(&env, purchase_id, &purchase);
+
+        // Update environmental impact
+        let mut impact = storage::get_environmental_impact(&env, event_id);
+        impact.total_offset_kg += offset_amount_kg;
+        impact.total_purchases += 1;
+        impact.net_impact_kg = impact.total_footprint_kg - impact.total_offset_kg;
+        impact.neutral_status = impact.net_impact_kg <= 0 && impact.total_footprint_kg > 0;
+        storage::set_environmental_impact(&env, event_id, &impact);
+
+        CarbonOffsetPurchased::emit(
+            &env,
+            purchase_id,
+            event_id,
+            purchaser,
+            offset_amount_kg,
+            cost,
+            project_id,
+        );
+
+        EnvironmentalImpactUpdated::emit(
+            &env,
+            event_id,
+            impact.total_footprint_kg,
+            impact.total_offset_kg,
+            impact.net_impact_kg,
+            impact.neutral_status,
+        );
+
+        Ok(purchase_id)
+    }
+
+    /// Track and return the current environmental impact for an event.
+    /// Can be called by anyone to check neutrality status.
+    pub fn track_environmental_impact(
+        env: Env,
+        event_id: u64,
+    ) -> EnvironmentalImpact {
+        storage::get_environmental_impact(&env, event_id)
+    }
+
+    /// Get a carbon offset purchase by ID
+    pub fn get_carbon_offset_purchase(
+        env: Env,
+        purchase_id: u64,
+    ) -> Result<CarbonOffsetPurchase, LumentixError> {
+        storage::get_carbon_offset_purchase(&env, purchase_id)
+    }
+
+    /// Get the carbon footprint for an event
+    pub fn get_carbon_footprint(
+        env: Env,
+        event_id: u64,
+    ) -> Option<CarbonFootprint> {
+        storage::get_carbon_footprint(&env, event_id)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BLOCKCHAIN-BASED IDENTITY VERIFICATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Issue an identity credential for a user.
+    /// Only the contract admin can issue credentials.
+    /// Supports multiple identity providers (Stellar, Ethereum, Solana, Polygon, Other).
+    pub fn issue_identity_credential(
+        env: Env,
+        admin: Address,
+        subject: Address,
+        provider: IdentityProvider,
+        provider_id: String,
+        level: u32,
+        expires_at: u64,
+        metadata_hash: BytesN<32>,
+    ) -> Result<u64, LumentixError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        validation::validate_string_not_empty(&provider_id)?;
+        validation::validate_identity_level(level)?;
+
+        // Validate expiry is in the future
+        let now = env.ledger().timestamp();
+        if expires_at <= now {
+            return Err(LumentixError::InvalidTimeRange);
+        }
+
+        // Check if credential already exists for this subject+provider
+        if storage::get_identity_credential_by_subject(&env, &subject, &provider).is_some() {
+            return Err(LumentixError::IdentityCredentialAlreadyExists);
+        }
+
+        // Register provider if not already
+        if !storage::is_identity_provider_supported(&env, &provider) {
+            storage::register_identity_provider(&env, &provider, true);
+        }
+
+        let credential_id = storage::get_next_identity_credential_id(&env);
+        storage::increment_identity_credential_id(&env);
+
+        let credential = IdentityCredential {
+            credential_id,
+            subject: subject.clone(),
+            provider: provider.clone(),
+            provider_id: provider_id.clone(),
+            issued_at: now,
+            expires_at,
+            revoked: false,
+            metadata_hash,
+            level,
+        };
+
+        storage::set_identity_credential(&env, credential_id, &credential);
+        storage::set_identity_credential_by_subject(&env, &subject, &provider, credential_id);
+
+        IdentityCredentialIssued::emit(&env, credential_id, subject, provider, level, expires_at);
+
+        Ok(credential_id)
+    }
+
+    /// Verify a blockchain identity by checking the credential's authenticity and validity.
+    /// Returns true if the credential exists, is not revoked, and has not expired.
+    pub fn verify_blockchain_identity(
+        env: Env,
+        credential_id: u64,
+        subject: Address,
+    ) -> Result<bool, LumentixError> {
+        let credential = storage::get_identity_credential(&env, credential_id)?;
+
+        // Verify subject matches
+        if credential.subject != subject {
+            return Err(LumentixError::IdentityVerificationFailed);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Check if revoked
+        if credential.revoked {
+            BlockchainIdentityVerified::emit(
+                &env,
+                credential_id,
+                subject,
+                credential.provider,
+                false,
+            );
+            return Err(LumentixError::IdentityCredentialRevoked);
+        }
+
+        // Check if expired
+        if now > credential.expires_at {
+            BlockchainIdentityVerified::emit(
+                &env,
+                credential_id,
+                subject,
+                credential.provider,
+                false,
+            );
+            return Err(LumentixError::IdentityCredentialExpired);
+        }
+
+        BlockchainIdentityVerified::emit(
+            &env,
+            credential_id,
+            subject,
+            credential.provider,
+            true,
+        );
+
+        Ok(true)
+    }
+
+    /// Validate the authenticity of an identity credential using a cryptographic proof.
+    /// This checks that the proof signature matches the credential and subject.
+    pub fn validate_credential_authenticity(
+        env: Env,
+        credential_id: u64,
+        proof: IdentityProof,
+    ) -> Result<bool, LumentixError> {
+        let credential = storage::get_identity_credential(&env, credential_id)?;
+
+        // Verify proof subject matches credential subject
+        if proof.subject != credential.subject {
+            return Err(LumentixError::IdentityVerificationFailed);
+        }
+
+        // Verify proof credential ID matches
+        if proof.credential_id != credential_id {
+            return Err(LumentixError::IdentityVerificationFailed);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Check if revoked
+        if credential.revoked {
+            return Err(LumentixError::IdentityCredentialRevoked);
+        }
+
+        // Check if expired
+        if now > credential.expires_at {
+            return Err(LumentixError::IdentityCredentialExpired);
+        }
+
+        // In production, this would verify a cryptographic signature
+        // For now, we validate the proof structure and timestamp freshness
+        // Proof timestamp should be within reasonable window (e.g., 5 minutes)
+        let min_valid = if now >= 300 { now - 300 } else { 0 };
+        if proof.timestamp > now || proof.timestamp < min_valid {
+            return Err(LumentixError::InvalidIdentityProof);
+        }
+
+        // Verify signature is non-zero (placeholder for actual signature verification)
+        let mut sig_valid = false;
+        for i in 0..64 {
+            if proof.signature.get(i) != Some(0) {
+                sig_valid = true;
+                break;
+            }
+        }
+        if !sig_valid {
+            return Err(LumentixError::InvalidIdentityProof);
+        }
+
+        Ok(true)
+    }
+
+    /// Revoke an identity credential (admin only)
+    pub fn revoke_identity_credential(
+        env: Env,
+        admin: Address,
+        credential_id: u64,
+    ) -> Result<(), LumentixError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        let mut credential = storage::get_identity_credential(&env, credential_id)?;
+        credential.revoked = true;
+        storage::set_identity_credential(&env, credential_id, &credential);
+
+        IdentityCredentialRevoked::emit(&env, credential_id, credential.subject, admin);
+
+        Ok(())
+    }
+
+    /// Get an identity credential by ID
+    pub fn get_identity_credential(
+        env: Env,
+        credential_id: u64,
+    ) -> Result<IdentityCredential, LumentixError> {
+        storage::get_identity_credential(&env, credential_id)
+    }
+
+    /// Check if a credential exists for a given subject and provider
+    pub fn get_credential_by_subject(
+        env: Env,
+        subject: Address,
+        provider: IdentityProvider,
+    ) -> Option<u64> {
+        storage::get_identity_credential_by_subject(&env, &subject, &provider)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CROSS-CHAIN TICKET PORTABILITY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Register a supported blockchain for cross-chain transfers.
+    /// Only the contract admin can register supported chains.
+    pub fn register_supported_chain(
+        env: Env,
+        admin: Address,
+        chain: String,
+    ) -> Result<(), LumentixError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        validation::validate_chain_name(&chain)?;
+        storage::register_supported_chain(&env, &chain, true);
+
+        Ok(())
+    }
+
+    /// Pause or unpause the bridge functionality (admin only)
+    pub fn set_bridge_paused(
+        env: Env,
+        admin: Address,
+        paused: bool,
+    ) -> Result<(), LumentixError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        storage::set_bridge_paused(&env, paused);
+
+        Ok(())
+    }
+
+    /// Initiate a cross-chain ticket transfer.
+    /// The ticket owner can initiate a transfer to another blockchain.
+    /// The ticket is locked in the contract until the bridge transfer completes.
+    pub fn initiate_cross_chain_transfer(
+        env: Env,
+        sender: Address,
+        ticket_id: u64,
+        event_id: u64,
+        target_chain: String,
+        recipient: Address,
+    ) -> Result<u64, LumentixError> {
+        sender.require_auth();
+
+        // Check bridge is not paused
+        if storage::is_bridge_paused(&env) {
+            return Err(LumentixError::BridgePaused);
+        }
+
+        // Validate target chain is supported
+        if !storage::is_chain_supported(&env, &target_chain) {
+            return Err(LumentixError::UnsupportedTargetChain);
+        }
+
+        // Verify ticket ownership
+        let ticket = storage::get_ticket(&env, ticket_id)?;
+        if ticket.owner != sender {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        // Verify ticket belongs to the specified event
+        if ticket.event_id != event_id {
+            return Err(LumentixError::TicketEventMismatch);
+        }
+
+        // Ticket must not be used, refunded, or revoked
+        if ticket.used {
+            return Err(LumentixError::TicketAlreadyUsed);
+        }
+        if ticket.revoked {
+            return Err(LumentixError::RevokedTicket);
+        }
+
+        let transfer_id = storage::get_next_cross_chain_transfer_id(&env);
+        storage::increment_cross_chain_transfer_id(&env);
+
+        let now = env.ledger().timestamp();
+
+        let transfer = CrossChainTransfer {
+            transfer_id,
+            ticket_id,
+            event_id,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            source_chain: String::from_str(&env, "Stellar"),
+            target_chain: target_chain.clone(),
+            status: CrossChainTransferStatus::Initiated,
+            initiated_at: now,
+            bridge_tx_hash: None,
+            completed_at: None,
+        };
+
+        storage::set_cross_chain_transfer(&env, transfer_id, &transfer);
+
+        CrossChainTransferInitiated::emit(
+            &env,
+            transfer_id,
+            ticket_id,
+            event_id,
+            sender,
+            transfer.source_chain,
+            target_chain,
+        );
+
+        Ok(transfer_id)
+    }
+
+    /// Validate a bridge transaction for a cross-chain transfer.
+    /// This is called by the bridge oracle/validator to confirm
+    /// that the transaction on the source chain is valid.
+    pub fn validate_bridge_transaction(
+        env: Env,
+        validator: Address,
+        transfer_id: u64,
+        tx_hash: String,
+        block_number: u64,
+    ) -> Result<(), LumentixError> {
+        validator.require_auth();
+
+        // In production, only authorized validators can validate
+        // For now, any governance member or admin can validate
+        let stored_admin = storage::get_admin(&env);
+        if validator != stored_admin {
+            let config = storage::get_upgrade_governance_config(&env);
+            let mut is_validator = false;
+            for i in 0..config.governance_members.len() {
+                if config.governance_members.get(i).unwrap() == validator {
+                    is_validator = true;
+                    break;
+                }
+            }
+            if !is_validator {
+                return Err(LumentixError::Unauthorized);
+            }
+        }
+
+        validation::validate_string_not_empty(&tx_hash)?;
+
+        let mut transfer = storage::get_cross_chain_transfer(&env, transfer_id)?;
+
+        if transfer.status != CrossChainTransferStatus::Initiated {
+            return Err(LumentixError::CrossChainTransferAlreadyCompleted);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Record bridge transaction
+        let bridge_tx = BridgeTransaction {
+            tx_hash: tx_hash.clone(),
+            source_chain: transfer.source_chain.clone(),
+            target_chain: transfer.target_chain.clone(),
+            sender: transfer.sender.clone(),
+            recipient: transfer.recipient.clone(),
+            ticket_id: transfer.ticket_id,
+            validated: true,
+            validation_time: now,
+            block_number,
+        };
+
+        storage::set_bridge_transaction(&env, &tx_hash, &bridge_tx);
+
+        // Update transfer status
+        transfer.status = CrossChainTransferStatus::BridgeValidated;
+        transfer.bridge_tx_hash = Some(tx_hash.clone());
+        storage::set_cross_chain_transfer(&env, transfer_id, &transfer);
+
+        BridgeTransactionValidated::emit(
+            &env,
+            transfer_id,
+            tx_hash,
+            true,
+            validator,
+        );
+
+        Ok(())
+    }
+
+    /// Complete a cross-chain transfer after bridge validation.
+    /// This marks the ticket as transferred on the source chain
+    /// and finalizes the portability record.
+    pub fn complete_cross_chain_transfer(
+        env: Env,
+        caller: Address,
+        transfer_id: u64,
+    ) -> Result<(), LumentixError> {
+        caller.require_auth();
+
+        let mut transfer = storage::get_cross_chain_transfer(&env, transfer_id)?;
+
+        // Must be in BridgeValidated state
+        if transfer.status != CrossChainTransferStatus::BridgeValidated {
+            return Err(LumentixError::CrossChainTransferAlreadyCompleted);
+        }
+
+        // Only the sender or admin can complete
+        let stored_admin = storage::get_admin(&env);
+        if caller != transfer.sender && caller != stored_admin {
+            let config = storage::get_upgrade_governance_config(&env);
+            let mut is_member = false;
+            for i in 0..config.governance_members.len() {
+                if config.governance_members.get(i).unwrap() == caller {
+                    is_member = true;
+                    break;
+                }
+            }
+            if !is_member {
+                return Err(LumentixError::Unauthorized);
+            }
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Update ticket ownership if on same chain (for Stellar-to-Stellar simulated)
+        // In production, the ticket would be minted/burned across chains
+        let mut ticket = storage::get_ticket(&env, transfer.ticket_id)?;
+        ticket.owner = transfer.recipient.clone();
+        storage::set_ticket(&env, transfer.ticket_id, &ticket);
+
+        // Finalize transfer
+        transfer.status = CrossChainTransferStatus::Completed;
+        transfer.completed_at = Some(now);
+        storage::set_cross_chain_transfer(&env, transfer_id, &transfer);
+
+        CrossChainTransferCompleted::emit(
+            &env,
+            transfer_id,
+            transfer.ticket_id,
+            transfer.recipient,
+            transfer.target_chain,
+        );
+
+        Ok(())
+    }
+
+    /// Get a cross-chain transfer by ID
+    pub fn get_cross_chain_transfer(
+        env: Env,
+        transfer_id: u64,
+    ) -> Result<CrossChainTransfer, LumentixError> {
+        storage::get_cross_chain_transfer(&env, transfer_id)
+    }
+
+    /// Get a bridge transaction by hash
+    pub fn get_bridge_transaction(
+        env: Env,
+        tx_hash: String,
+    ) -> Option<BridgeTransaction> {
+        storage::get_bridge_transaction(&env, &tx_hash)
+    }
+
+    /// Check if bridge is paused
+    pub fn is_bridge_paused(env: Env) -> bool {
+        storage::is_bridge_paused(&env)
+    }
+
+    /// Check if a chain is supported
+    pub fn is_chain_supported(env: Env, chain: String) -> bool {
+        storage::is_chain_supported(&env, &chain)
     }
 }

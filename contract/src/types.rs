@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, String, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 
 pub const INSTANCE_LIFETIME: u32 = 535_680; // ~30 days
 pub const PERSISTENT_LIFETIME: u32 = 535_680; // ~30 days
@@ -238,4 +238,183 @@ pub struct OrganizerReputation {
     pub average_rating_x100: u32,
     pub total_reviews: u32,
     pub total_ratings_sum: u32,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Smart Contract Upgrade Mechanism
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Represents the current state of an upgrade proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpgradeState {
+    Pending,
+    Approved,
+    Executed,
+    Rejected,
+}
+
+/// An upgrade proposal to replace the contract WASM
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub new_wasm_hash: BytesN<32>,
+    pub description: String,
+    pub created_at: u64,
+    pub voting_deadline: u64,
+    pub state: UpgradeState,
+    pub yes_votes: u32,
+    pub no_votes: u32,
+    pub required_yes_votes: u32,
+    pub total_voters: u32,
+}
+
+/// A record of a single vote on an upgrade proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeVote {
+    pub voter: Address,
+    pub proposal_id: u64,
+    pub vote_yes: bool,
+    pub timestamp: u64,
+}
+
+/// Governance configuration for the upgrade mechanism
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeGovernanceConfig {
+    pub voting_period_seconds: u64,
+    pub required_approval_percentage: u32,
+    pub governance_members: Vec<Address>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Carbon Offset Program
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of a carbon footprint calculation
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CarbonFootprint {
+    pub event_id: u64,
+    pub venue_footprint_kg: i128,
+    pub attendance_footprint_kg: i128,
+    pub travel_footprint_kg: i128,
+    pub total_footprint_kg: i128,
+    pub calculated_at: u64,
+}
+
+/// A carbon offset purchase record
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CarbonOffsetPurchase {
+    pub purchase_id: u64,
+    pub event_id: u64,
+    pub purchaser: Address,
+    pub offset_amount_kg: i128,
+    pub cost: i128,
+    pub project_id: String,
+    pub timestamp: u64,
+    pub verified: bool,
+}
+
+/// Aggregated environmental impact tracking for an event
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnvironmentalImpact {
+    pub event_id: u64,
+    pub total_footprint_kg: i128,
+    pub total_offset_kg: i128,
+    pub net_impact_kg: i128,
+    pub total_purchases: u32,
+    pub neutral_status: bool,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Blockchain-Based Identity Verification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Supported identity provider types
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IdentityProvider {
+    Stellar,
+    Ethereum,
+    Solana,
+    Polygon,
+    Other(String),
+}
+
+/// An identity credential issued on-chain
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentityCredential {
+    pub credential_id: u64,
+    pub subject: Address,
+    pub provider: IdentityProvider,
+    pub provider_id: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub revoked: bool,
+    pub metadata_hash: BytesN<32>,
+    pub level: u32,
+}
+
+/// Verification proof for an identity credential
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentityProof {
+    pub credential_id: u64,
+    pub subject: Address,
+    pub signature: BytesN<64>,
+    pub timestamp: u64,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cross-Chain Ticket Portability
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Status of a cross-chain transfer
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CrossChainTransferStatus {
+    Initiated,
+    BridgeValidated,
+    Completed,
+    Failed,
+    Expired,
+}
+
+/// A cross-chain ticket transfer request
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrossChainTransfer {
+    pub transfer_id: u64,
+    pub ticket_id: u64,
+    pub event_id: u64,
+    pub sender: Address,
+    pub recipient: Address,
+    pub source_chain: String,
+    pub target_chain: String,
+    pub status: CrossChainTransferStatus,
+    pub initiated_at: u64,
+    pub bridge_tx_hash: Option<String>,
+    pub completed_at: Option<u64>,
+}
+
+/// A validated bridge transaction for cross-chain transfer
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgeTransaction {
+    pub tx_hash: String,
+    pub source_chain: String,
+    pub target_chain: String,
+    pub sender: Address,
+    pub recipient: Address,
+    pub ticket_id: u64,
+    pub validated: bool,
+    pub validation_time: u64,
+    pub block_number: u64,
 }

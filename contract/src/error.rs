@@ -149,4 +149,74 @@ pub enum LumentixError {
     InvalidRating = 61,
     /// Ticket does not belong to the reviewed event
     TicketEventMismatch = 62,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Smart Contract Upgrade errors (63–69)
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Upgrade proposal not found
+    UpgradeProposalNotFound = 63,
+    /// Upgrade proposal already exists for this hash
+    UpgradeProposalAlreadyExists = 64,
+    /// Upgrade proposal is not in voting state
+    UpgradeNotInVotingState = 65,
+    /// Voter has already voted on this proposal
+    UpgradeAlreadyVoted = 66,
+    /// Upgrade proposal voting period has expired
+    UpgradeVotingPeriodExpired = 67,
+    /// Not enough votes to pass the upgrade proposal
+    UpgradeInsufficientVotes = 68,
+    /// Upgrade proposal has already been executed
+    UpgradeAlreadyExecuted = 69,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Carbon Offset errors (70–75)
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Carbon offset purchase not found
+    CarbonOffsetNotFound = 70,
+    /// Carbon offset program not configured for event
+    CarbonOffsetNotConfigured = 71,
+    /// Insufficient carbon offset credits available
+    InsufficientCarbonCredits = 72,
+    /// Invalid carbon footprint calculation parameters
+    InvalidCarbonFootprintParams = 73,
+    /// Carbon offset already purchased for this ticket/event
+    CarbonOffsetAlreadyPurchased = 74,
+    /// Carbon offset project not recognized
+    CarbonOffsetProjectNotFound = 75,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Identity Verification errors (76–82)
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Identity credential not found
+    IdentityCredentialNotFound = 76,
+    /// Identity credential has expired
+    IdentityCredentialExpired = 77,
+    /// Identity credential has been revoked
+    IdentityCredentialRevoked = 78,
+    /// Identity provider not supported
+    IdentityProviderNotSupported = 79,
+    /// Identity verification failed
+    IdentityVerificationFailed = 80,
+    /// Identity credential already exists for this user
+    IdentityCredentialAlreadyExists = 81,
+    /// Invalid identity proof provided
+    InvalidIdentityProof = 82,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Cross-Chain Ticket Portability errors (83–89)
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Cross-chain transfer not found
+    CrossChainTransferNotFound = 83,
+    /// Cross-chain transfer already completed
+    CrossChainTransferAlreadyCompleted = 84,
+    /// Cross-chain bridge transaction validation failed
+    BridgeTransactionInvalid = 85,
+    /// Target chain is not supported for portability
+    UnsupportedTargetChain = 86,
+    /// Cross-chain transfer is already in progress
+    CrossChainTransferInProgress = 87,
+    /// Cross-chain transfer has expired
+    CrossChainTransferExpired = 88,
+    /// Bridge is currently paused
+    BridgePaused = 89,
 }

@@ -241,9 +241,27 @@ mod withdraw_platform_fees_test;
 #[cfg(test)]
 mod vip_accessibility_currency_seat_tests;
 
+#[cfg(test)]
+mod upgrade_carbon_identity_crosschain_tests;
+
 pub use contract::TicketContract;
 pub use error::LumentixError;
-pub use events::{CheckInEvent, EventCancelled, EventMetadataUpdated, EventSalesPaused, EventSalesResumed, InsuranceClaimProcessed, InsurancePoolUpdated, InsurancePurchased, TransferEvent, AttendanceVerified, AttendanceVerificationFailed, ReviewSubmitted, ReputationUpdated};
+pub use events::{
+    AttendanceVerificationFailed, AttendanceVerified, BlockchainIdentityVerified,
+    BridgeTransactionValidated, CarbonFootprintCalculated, CarbonOffsetPurchased,
+    CheckInEvent, CrossChainTransferCompleted, CrossChainTransferInitiated,
+    EnvironmentalImpactUpdated, EventCancelled, EventMetadataUpdated, EventSalesPaused,
+    EventSalesResumed, IdentityCredentialIssued, IdentityCredentialRevoked,
+    InsuranceClaimProcessed, InsurancePoolUpdated, InsurancePurchased, ReputationUpdated,
+    ReviewSubmitted, TransferEvent, UpgradeExecuted, UpgradeGovernanceConfigUpdated,
+    UpgradeProposed, UpgradeVoteCast,
+};
 pub use lumentix_contract::LumentixContract;
 pub use models::{DataKey, EscrowConfig, EventAuth, Ticket as TicketModel, ValidatorKey};
-pub use types::{CancellationReason, Event, EventReview, EventStatus, InsurancePool, InsurancePolicy, OrganizerReputation, Ticket as LumentixTicket};
+pub use types::{
+    BridgeTransaction, CancellationReason, CarbonFootprint, CarbonOffsetPurchase,
+    CrossChainTransfer, CrossChainTransferStatus, EnvironmentalImpact, Event, EventReview,
+    EventStatus, IdentityCredential, IdentityProof, IdentityProvider, InsurancePolicy,
+    InsurancePool, OrganizerReputation, Ticket as LumentixTicket, UpgradeGovernanceConfig,
+    UpgradeProposal, UpgradeState, UpgradeVote,
+};
