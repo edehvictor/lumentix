@@ -1,41 +1,13 @@
 'use client';
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-} from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { WalletContextType, WalletState, WalletType, NetworkType } from '@/types/wallet';
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-const STORAGE_KEY = 'lumentix_wallet';
-
-function saveWallet(data: { walletType: WalletType; publicKey: string; network: NetworkType }) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch { /* ignore */ }
-}
-
-function loadWallet(): { walletType: WalletType; publicKey: string; network: NetworkType } | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-
-function clearWallet() {
-  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
-}
-
-async function connectFreighter(network: NetworkType): Promise<string> {
-  const freighter = await import('@stellar/freighter-api');
-  const { isConnected, error: connErr } = await freighter.isConnected();
-  if (connErr || !isConnected) throw new Error('Freighter is not installed or not connected.');
-  const { address, error: addrErr } = await freighter.requestAccess();
-  if (addrErr || !address) throw new Error(addrErr?.message ?? 'Could not get address from Freighter.');
-  return address;
-}
+import { connectFreighter, isFreighterAvailable } from '@/lib/stellar/freighter';
+import {
+  saveWalletData,
+  getStoredWalletData,
+  clearWalletData,
+} from '@/lib/stellar/wallet-utils';
 
 // ── context ───────────────────────────────────────────────────────────────────
 
@@ -56,7 +28,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [showInstallPrompt, setShowInstallPrompt] = useState(false);
   const [networkMismatch, setNetworkMismatch] = useState(false);
 
-  // Silent reconnect on mount — handles locked wallet, missing extension, and network mismatch
   useEffect(() => {
     const stored = loadWallet();
     if (!stored) return;
@@ -65,32 +36,35 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       try {
-        const freighter = await import('@stellar/freighter-api');
-        const { isConnected, error: connErr } = await freighter.isConnected();
+        if (stored.walletType === WalletType.FREIGHTER) {
+          const available = await isFreighterAvailable();
+          if (!available) {
+            clearWalletData();
+            setState(initialState);
+            return;
+          }
 
-        if (connErr || !isConnected) {
-          // Extension not installed or disabled
-          setShowInstallPrompt(true);
-          clearWallet();
-          setState({ ...INITIAL });
-          return;
-        }
+          const publicKey = await connectFreighter(stored.network);
 
-        const { address, error: addrErr } = await freighter.requestAccess();
-        if (addrErr || !address) {
-          // Wallet is locked — show actionable message
-          const isLocked =
-            addrErr?.message?.toLowerCase().includes('lock') ||
-            addrErr?.message?.toLowerCase().includes('unlock');
-          setState({
-            ...INITIAL,
-            error: isLocked
-              ? 'Your Freighter wallet is locked. Unlock it and reconnect.'
-              : 'Could not reconnect wallet. Please connect again.',
-          });
-          clearWallet();
-          return;
+          if (publicKey === stored.publicKey) {
+            setState({
+              isConnected: true,
+              publicKey,
+              walletType: WalletType.FREIGHTER,
+              network: stored.network,
+              isLoading: false,
+              error: null,
+            });
+          } else {
+            clearWalletData();
+            setState(initialState);
+          }
         }
+      } catch (error) {
+        clearWalletData();
+        setState(initialState);
+      }
+    };
 
         // Network mismatch check (best-effort)
         try {
@@ -126,31 +100,42 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setShowInstallPrompt(false);
     try {
       let publicKey: string;
-      if (walletType === WalletType.FREIGHTER) {
-        const freighter = await import('@stellar/freighter-api');
-        const { isConnected, error: connErr } = await freighter.isConnected();
-        if (connErr || !isConnected) {
-          setShowInstallPrompt(true);
-          setState(prev => ({ ...prev, isLoading: false }));
-          return;
-        }
-        publicKey = await connectFreighter(state.network);
-      } else {
-        throw new Error(`${walletType} integration coming soon.`);
+
+      switch (walletType) {
+        case WalletType.FREIGHTER:
+          publicKey = await connectFreighter(state.network);
+          break;
+
+        case WalletType.LOBSTR:
+          throw new Error('LOBSTR integration coming soon');
+
+        case WalletType.WALLET_CONNECT:
+          throw new Error('WalletConnect integration coming soon');
+
+        default:
+          throw new Error(`Unsupported wallet type: ${walletType}`);
       }
       const next: WalletState = {
         ...state, isConnected: true, publicKey, walletType, isLoading: false, error: null,
       };
-      setState(next);
-      saveWallet({ walletType, publicKey, network: state.network });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to connect wallet.';
-      const isLocked = msg.toLowerCase().includes('lock') || msg.toLowerCase().includes('unlock');
-      setState(prev => ({
-        ...prev, isLoading: false,
-        error: isLocked ? 'Please unlock your Freighter wallet and try again.' : msg,
+
+      setState(newState);
+
+      saveWalletData({
+        walletType,
+        publicKey,
+        network: state.network,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to connect wallet';
+
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: errorMessage,
       }));
-      clearWallet();
+
+      throw error;
     }
   }, [state]);
 
@@ -166,15 +151,39 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
     setState(prev => ({ ...prev, isLoading: true, error: null }));
     try {
-      const publicKey = await connectFreighter(network);
-      const next: WalletState = { ...state, publicKey, network, isLoading: false, error: null };
-      setState(next);
-      saveWallet({ walletType: state.walletType!, publicKey, network });
-    } catch (err) {
-      setState(prev => ({
-        ...prev, isLoading: false,
-        error: err instanceof Error ? err.message : 'Failed to switch network.',
+      let publicKey: string;
+
+      if (state.walletType === WalletType.FREIGHTER) {
+        publicKey = await connectFreighter(network);
+      } else {
+        throw new Error('Network switching not supported for this wallet');
+      }
+
+      const newState: WalletState = {
+        ...state,
+        publicKey,
+        network,
+        isLoading: false,
+        error: null,
+      };
+
+      setState(newState);
+
+      saveWalletData({
+        walletType: state.walletType,
+        publicKey,
+        network,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to switch network';
+
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: errorMessage,
       }));
+
+      throw error;
     }
   }, [state]);
 

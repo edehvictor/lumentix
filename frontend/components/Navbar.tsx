@@ -1,75 +1,104 @@
 'use client';
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useWallet } from '@/contexts/WalletContext';
-import { WalletType } from '@/types/wallet';
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useWallet } from "@/contexts/WalletContext";
+import { NetworkSwitcher } from "@/components/NetworkSwitcher";
+import { WalletButton } from "@/components/WalletButton";
+import MobileDrawer from "@/components/MobileDrawer";
 
-const NAV_LINKS = [
-  { name: 'Events', href: '/events' },
-  { name: 'Create', href: '/create' },
-  { name: 'Insurance', href: '/insurance' },
-  { name: 'Reviews', href: '/reviews' },
-  { name: 'Achievements', href: '/gamification' },
-  { name: 'Profile', href: '/profile' },
-];
-
-function truncate(key: string) {
-  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+interface NavLink {
+  name: string;
+  href: string;
+  requiresAuth?: boolean;
 }
 
-export default function Navbar() {
+const navLinks: NavLink[] = [
+  { name: "Events", href: "/events" },
+  { name: "Create Event", href: "/create", requiresAuth: true },
+  { name: "My Tickets", href: "/profile" },
+];
+
+const Navbar = () => {
   const pathname = usePathname();
-  const { isConnected, publicKey, isLoading, connect, disconnect } = useWallet();
+  const { isConnected } = useWallet();
+  const [isScrolled, setIsScrolled] = useState(false);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setIsScrolled(window.scrollY > 10);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  const isActive = (href: string) => {
+    if (href === "/") return pathname === href;
+    return pathname.startsWith(href);
+  };
+
+  const visibleLinks = navLinks.filter(
+    (link) => !link.requiresAuth || isConnected
+  );
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 py-4">
-      {/* Logo */}
-      <Link href="/" className="text-white font-bold text-lg tracking-tight">
-        Lumentix
-      </Link>
+    <>
+      <nav
+        className={`fixed top-0 left-0 right-0 z-50 h-16 transition-all duration-300 ${
+          isScrolled
+            ? "bg-[#060609]/80 backdrop-blur-xl shadow-lg shadow-black/10"
+            : "bg-[#060609]/40"
+        }`}
+      >
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full">
+          <div className="flex items-center justify-between h-full">
+            <Link href="/" className="flex items-center gap-2 shrink-0">
+              <span className="text-xl font-bold text-white tracking-tight">
+                Lumentix
+              </span>
+            </Link>
 
-      {/* Links */}
-      <div className="hidden md:flex items-center gap-1 px-4 py-2 bg-white/[0.06] backdrop-blur-md rounded-full border border-white/[0.1]">
-        {NAV_LINKS.map(link => (
-          <Link
-            key={link.name}
-            href={link.href}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-              pathname === link.href
-                ? 'bg-white/[0.12] text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            {link.name}
-          </Link>
-        ))}
-      </div>
+            <div className="hidden md:flex items-center gap-8">
+              {visibleLinks.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`text-sm font-medium transition-colors hover:text-white ${
+                    isActive(link.href)
+                      ? "text-white"
+                      : "text-gray-400"
+                  }`}
+                >
+                  {link.name}
+                </Link>
+              ))}
+            </div>
 
-      {/* Wallet */}
-      <div className="flex items-center gap-2">
-        {isConnected && publicKey ? (
-          <div className="flex items-center gap-2">
-            <span className="hidden sm:block text-xs text-gray-400 font-mono bg-white/[0.06] px-3 py-1.5 rounded-full border border-white/[0.08]">
-              {truncate(publicKey)}
-            </span>
+            <div className="hidden md:flex items-center gap-4">
+              <NetworkSwitcher />
+              <WalletButton />
+            </div>
+
             <button
-              onClick={disconnect}
-              className="text-xs text-gray-400 hover:text-red-400 transition-colors px-3 py-1.5 rounded-full border border-white/[0.08] hover:border-red-500/30"
+              onClick={() => setIsDrawerOpen(true)}
+              className="md:hidden p-2 text-gray-400 hover:text-white transition-colors"
+              aria-label="Open menu"
             >
-              Disconnect
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
             </button>
           </div>
-        ) : (
-          <button
-            onClick={() => connect(WalletType.FREIGHTER)}
-            disabled={isLoading}
-            className="text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 px-4 py-2 rounded-full transition-colors"
-          >
-            {isLoading ? 'Connecting…' : 'Connect Wallet'}
-          </button>
-        )}
-      </div>
-    </nav>
+        </div>
+      </nav>
+
+      <MobileDrawer
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        navLinks={visibleLinks}
+      />
+    </>
   );
 }
