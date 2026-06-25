@@ -4,7 +4,8 @@ use crate::types::{
     CarbonOffsetPurchase, CollectibleInventory, CrossChainTransfer, CurrencyConfig,
     EnvironmentalImpact, Event, EventMerchandise, EventReview, IdentityCredential,
     IdentityProvider, InsurancePolicy, InsurancePool, NftCollectible, OrganizerReputation, Seat,
-    Ticket, TicketTransferRecord, UpgradeGovernanceConfig, UpgradeProposal, UpgradeVote,
+    Ticket, TicketTransferRecord, TransferBlackout, ReferralLinkRecord,
+    UpgradeGovernanceConfig, UpgradeProposal, UpgradeVote,
     VenueLayout, VipTier, WaitlistOffer, PricingSchedule, MintGasUsage, StreamDeliveryConfig,
     StreamPerformanceMetrics, INSTANCE_LIFETIME, PERSISTENT_LIFETIME,
     VenueLayout, VipTier, WaitlistOffer, INSTANCE_LIFETIME, PERSISTENT_LIFETIME,
@@ -24,6 +25,10 @@ const ESCROW_PREFIX: &str = "ESCROW_";
 const PLATFORM_FEE_BPS: &str = "PLATFORM_FEE_BPS";
 const PLATFORM_BALANCE: &str = "PLATFORM_BAL";
 const TRANSFER_HISTORY_PREFIX: &str = "TXHIST_";
+const TRANSFER_BLACKOUT_PREFIX: &str = "TXBLK_";
+const REFERRAL_LINK_PREFIX: &str = "REFLINK_";
+const REFERRAL_CODE_PREFIX: &str = "REFCODE_";
+const REFERRAL_PURCHASE_PREFIX: &str = "REFBUY_";
 const VIP_TIER_PREFIX: &str = "VIP_";
 const ACCESSIBILITY_INV_PREFIX: &str = "ACCINV_";
 const ACCESSIBILITY_BOOKING_PREFIX: &str = "ACCBOOK_";
@@ -324,6 +329,99 @@ pub fn get_ticket_transfer_history(env: &Env, ticket_id: u64) -> Vec<TicketTrans
             .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
     }
     history
+}
+
+/// Store a transfer blackout window for an event.
+pub fn set_transfer_blackout(env: &Env, event_id: u64, blackout: &TransferBlackout) {
+    let key = (TRANSFER_BLACKOUT_PREFIX, event_id);
+    env.storage().persistent().set(&key, blackout);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+}
+
+/// Return an event transfer blackout window if one has been configured.
+pub fn get_transfer_blackout(env: &Env, event_id: u64) -> Option<TransferBlackout> {
+    let key = (TRANSFER_BLACKOUT_PREFIX, event_id);
+    let blackout = env.storage().persistent().get(&key);
+    if blackout.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+    }
+    blackout
+}
+
+/// Store referral reward state for a referrer in a specific event.
+pub fn set_referral_link_record(
+    env: &Env,
+    event_id: u64,
+    referrer: &Address,
+    record: &ReferralLinkRecord,
+) {
+    let key = (REFERRAL_LINK_PREFIX, event_id, referrer.clone());
+    env.storage().persistent().set(&key, record);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+}
+
+/// Load referral reward state for a referrer in a specific event.
+pub fn get_referral_link_record(
+    env: &Env,
+    event_id: u64,
+    referrer: &Address,
+) -> Option<ReferralLinkRecord> {
+    let key = (REFERRAL_LINK_PREFIX, event_id, referrer.clone());
+    let record = env.storage().persistent().get(&key);
+    if record.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+    }
+    record
+}
+
+/// Claim or look up a referral code owner for an event.
+pub fn set_referral_code_owner(env: &Env, event_id: u64, link_code: &String, referrer: &Address) {
+    let key = (REFERRAL_CODE_PREFIX, event_id, link_code.clone());
+    env.storage().persistent().set(&key, referrer);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+}
+
+/// Load the owner of a referral code for an event.
+pub fn get_referral_code_owner(env: &Env, event_id: u64, link_code: &String) -> Option<Address> {
+    let key = (REFERRAL_CODE_PREFIX, event_id, link_code.clone());
+    let owner = env.storage().persistent().get(&key);
+    if owner.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+    }
+    owner
+}
+
+/// Mark a buyer as already processed for referral rewards in an event.
+pub fn set_referral_purchase_processed(env: &Env, event_id: u64, buyer: &Address) {
+    let key = (REFERRAL_PURCHASE_PREFIX, event_id, buyer.clone());
+    env.storage().persistent().set(&key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+}
+
+/// Return whether a buyer has already been counted for a referral reward in an event.
+pub fn has_referral_purchase_processed(env: &Env, event_id: u64, buyer: &Address) -> bool {
+    let key = (REFERRAL_PURCHASE_PREFIX, event_id, buyer.clone());
+    let has = env.storage().persistent().has(&key);
+    if has {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_LIFETIME, PERSISTENT_LIFETIME);
+    }
+    has
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

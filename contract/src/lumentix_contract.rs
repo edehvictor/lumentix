@@ -13,8 +13,10 @@ use crate::events::{
     IdentityCredentialRevoked, InsuranceClaimProcessed, InsurancePoolUpdated, InsurancePurchased,
     MerchandiseCreated, MerchandisePurchased, NftMinted, NftTraded, OraclePriceUpdated,
     PlatformFeeRecipientUpdated, PlatformFeeUpdated, PlatformFeesWithdrawn, ProtocolFeeQueried,
-    ReputationUpdated, ReviewSubmitted, SeatHoldReleased, SeatSelected, TicketPurchased,
-    TicketRefunded, TicketRevoked, TicketTransferred, TicketUsed, UpgradeExecuted,
+    ReferralLinkGenerated, ReferralPurchaseProcessed, ReferralRewardsCredited, ReputationUpdated,
+    ReviewSubmitted, SeatHoldReleased, SeatSelected, TicketPurchased, TicketRefunded,
+    TicketRevoked, TicketTransferred, TicketUsed, TransferBlackoutUpdated, TransferLockBypassed,
+    UpgradeExecuted,
     UpgradeGovernanceConfigUpdated, UpgradeProposed, UpgradeVoteCast, VenueLayoutCreated,
     VipTicketAssigned, VipTierCreated, WaitlistAvailabilityNotified, WaitlistJoined,
     VenueSpaceAllocated, SpaceUtilizationOptimized, VenueConflictManaged,
@@ -28,10 +30,11 @@ use crate::types::{
     CarbonFootprint, CarbonOffsetPurchase, CollectibleInventory, CrossChainTransfer,
     CrossChainTransferStatus, CurrencyConfig, EnvironmentalImpact, Event, EventMerchandise,
     EventReview, EventStatus, IdentityCredential, IdentityProof, IdentityProvider, InsurancePolicy,
-    NftCollectible, OrganizerReputation, RarityTier, Seat, Ticket, TicketTransferRecord,
-    UpgradeGovernanceConfig, UpgradeProposal, UpgradeState, UpgradeVote, VenueLayout, VenueSection,
-    VipTier, WaitlistOffer, PriceTier, PricingSchedule, MintGasUsage, StreamDeliveryConfig,
-    StreamPerformanceMetrics, PERSISTENT_LIFETIME,
+    NftCollectible, OrganizerReputation, RarityTier, ReferralLinkRecord, Seat, Ticket,
+    TicketTransferRecord, TransferBlackout, UpgradeGovernanceConfig, UpgradeProposal,
+    UpgradeState, UpgradeVote, VenueLayout, VenueSection, VipTier, WaitlistOffer, PriceTier,
+    PricingSchedule, MintGasUsage, StreamDeliveryConfig, StreamPerformanceMetrics,
+    PERSISTENT_LIFETIME,
     VipTier, WaitlistOffer, PERSISTENT_LIFETIME, VenueSpaceAllocation, SubscriptionPlan,
     SubscriptionStatus, SecurityIncident, UserPreferences,
 };
@@ -47,6 +50,8 @@ const THIRTY_DAYS_SECONDS: u64 = 30 * 24 * 60 * 60;
 const MAX_BATCH_MINT_SIZE: u32 = 10;
 const MINT_BASE_RESOURCE_UNITS: u64 = 5_000;
 const MINT_PER_TICKET_RESOURCE_UNITS: u64 = 1_200;
+const REFERRAL_DISCOUNT_BPS: i128 = 500;
+const REFERRAL_REWARD_BPS: i128 = 500;
 
 #[contractimpl]
 impl LumentixContract {
@@ -809,52 +814,9 @@ impl LumentixContract {
     ) -> Result<(), LumentixError> {
         from.require_auth();
 
-        // Read the ticket
         let mut ticket = storage::get_ticket(&env, ticket_id)?;
-
-        // Verify the caller is the current owner
-        if ticket.owner != from {
-            return Err(LumentixError::Unauthorized);
-        }
-
-        if ticket.revoked {
-            return Err(LumentixError::RevokedTicket);
-        }
-
-        // Verify ticket is not used
-        if ticket.used {
-            return Err(LumentixError::TicketAlreadyUsed);
-        }
-
-        // Verify ticket is not refunded
-        if ticket.refunded {
-            return Err(LumentixError::RefundNotAllowed);
-        }
-
-        // Read the event and verify it's published
-        let event = storage::get_event(&env, ticket.event_id)?;
-        if event.status != EventStatus::Published {
-            return Err(LumentixError::InvalidStatusTransition);
-        }
-
-        // Update ticket owner
-        ticket.owner = to.clone();
-        storage::set_ticket(&env, ticket_id, &ticket);
-
-        // Record transfer in history
-        storage::append_ticket_transfer_history(
-            &env,
-            ticket_id,
-            TicketTransferRecord {
-                from: from.clone(),
-                to: to.clone(),
-                timestamp: env.ledger().timestamp(),
-            },
-        );
-
-        // Emit TicketTransferred event
-        TicketTransferred::emit(&env, ticket_id, ticket.event_id, from, to);
-
+        Self::validate_ticket_transfer(&env, &ticket, &from, true)?;
+        Self::persist_ticket_transfer(&env, ticket_id, &mut ticket, from, to);
         Ok(())
     }
 
@@ -869,6 +831,179 @@ impl LumentixContract {
         // Verify the ticket exists before returning history
         storage::get_ticket(&env, ticket_id)?;
         Ok(storage::get_ticket_transfer_history(&env, ticket_id))
+    }
+
+    /// Configure a blackout window during which peer-to-peer ticket transfers are locked.
+    pub fn set_transfer_blackout(
+        env: Env,
+        organizer: Address,
+        event_id: u64,
+        starts_at: u64,
+        ends_at: u64,
+    ) -> Result<(), LumentixError> {
+        organizer.require_auth();
+
+        let event = storage::get_event(&env, event_id)?;
+        if event.organizer != organizer {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        validation::validate_time_range(starts_at, ends_at)?;
+
+        storage::set_transfer_blackout(
+            &env,
+            event_id,
+            &TransferBlackout {
+                starts_at,
+                ends_at,
+            },
+        );
+
+        TransferBlackoutUpdated::emit(&env, event_id, organizer, starts_at, ends_at);
+        Ok(())
+    }
+
+    /// Return whether the current ledger time is inside the configured transfer blackout window.
+    pub fn is_transfer_blackout_active(env: Env, event_id: u64) -> Result<bool, LumentixError> {
+        storage::get_event(&env, event_id)?;
+        Ok(Self::is_transfer_blackout_active_for_event(&env, event_id))
+    }
+
+    /// Organizer or platform admin override for transfer blackouts.
+    pub fn bypass_transfer_lock(
+        env: Env,
+        operator: Address,
+        ticket_id: u64,
+        from: Address,
+        to: Address,
+    ) -> Result<(), LumentixError> {
+        operator.require_auth();
+
+        let mut ticket = storage::get_ticket(&env, ticket_id)?;
+        let event = storage::get_event(&env, ticket.event_id)?;
+        let admin = storage::get_admin(&env);
+        if operator != event.organizer && operator != admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        Self::validate_ticket_transfer(&env, &ticket, &from, false)?;
+        let event_id = ticket.event_id;
+        Self::persist_ticket_transfer(&env, ticket_id, &mut ticket, from.clone(), to.clone());
+        TransferLockBypassed::emit(&env, event_id, ticket_id, operator, from, to);
+        Ok(())
+    }
+
+    /// Create a reusable referral link code for a referrer on a published event.
+    pub fn generate_referral_link(
+        env: Env,
+        referrer: Address,
+        event_id: u64,
+        link_code: String,
+    ) -> Result<String, LumentixError> {
+        referrer.require_auth();
+        validation::validate_string_not_empty(&link_code)?;
+
+        let event = storage::get_event(&env, event_id)?;
+        if event.status != EventStatus::Published {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+
+        if let Some(existing) = storage::get_referral_link_record(&env, event_id, &referrer) {
+            return Ok(existing.link_code);
+        }
+
+        if let Some(existing_owner) = storage::get_referral_code_owner(&env, event_id, &link_code) {
+            if existing_owner != referrer {
+                return Err(LumentixError::ReferralLinkAlreadyExists);
+            }
+        }
+
+        storage::set_referral_code_owner(&env, event_id, &link_code, &referrer);
+        storage::set_referral_link_record(
+            &env,
+            event_id,
+            &referrer,
+            &ReferralLinkRecord {
+                link_code: link_code.clone(),
+                successful_purchases: 0,
+                pending_rewards: 0,
+                total_rewards_paid: 0,
+                total_discount_awarded: 0,
+            },
+        );
+
+        ReferralLinkGenerated::emit(&env, event_id, referrer, link_code.clone());
+        Ok(link_code)
+    }
+
+    /// Register a referred purchase and accrue the referrer's pending rewards.
+    pub fn process_referred_purchase(
+        env: Env,
+        buyer: Address,
+        event_id: u64,
+        link_code: String,
+    ) -> Result<(i128, i128), LumentixError> {
+        buyer.require_auth();
+        validation::validate_string_not_empty(&link_code)?;
+
+        let event = storage::get_event(&env, event_id)?;
+        if event.status != EventStatus::Published {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+
+        let referrer = storage::get_referral_code_owner(&env, event_id, &link_code)
+            .ok_or(LumentixError::ReferralLinkNotFound)?;
+        if referrer == buyer {
+            return Err(LumentixError::SelfReferralNotAllowed);
+        }
+        if storage::has_referral_purchase_processed(&env, event_id, &buyer) {
+            return Err(LumentixError::ReferralPurchaseAlreadyProcessed);
+        }
+
+        let mut record = storage::get_referral_link_record(&env, event_id, &referrer)
+            .ok_or(LumentixError::ReferralLinkNotFound)?;
+        let discount_amount = (event.ticket_price * REFERRAL_DISCOUNT_BPS) / 10000;
+        let reward_amount = (event.ticket_price * REFERRAL_REWARD_BPS) / 10000;
+        let discounted_price = event.ticket_price - discount_amount;
+
+        record.successful_purchases = record.successful_purchases.saturating_add(1);
+        record.pending_rewards += reward_amount;
+        record.total_discount_awarded += discount_amount;
+        storage::set_referral_link_record(&env, event_id, &referrer, &record);
+        storage::set_referral_purchase_processed(&env, event_id, &buyer);
+
+        ReferralPurchaseProcessed::emit(
+            &env,
+            event_id,
+            referrer,
+            buyer,
+            discounted_price,
+            reward_amount,
+        );
+        Ok((discounted_price, reward_amount))
+    }
+
+    /// Move accrued referral rewards from pending into paid state for a referrer.
+    pub fn credit_referral_rewards(
+        env: Env,
+        referrer: Address,
+        event_id: u64,
+    ) -> Result<i128, LumentixError> {
+        referrer.require_auth();
+
+        let mut record = storage::get_referral_link_record(&env, event_id, &referrer)
+            .ok_or(LumentixError::ReferralLinkNotFound)?;
+        let amount = record.pending_rewards;
+        if amount == 0 {
+            return Ok(0);
+        }
+
+        record.pending_rewards = 0;
+        record.total_rewards_paid += amount;
+        storage::set_referral_link_record(&env, event_id, &referrer, &record);
+
+        ReferralRewardsCredited::emit(&env, event_id, referrer, amount);
+        Ok(amount)
     }
 
     /// Refund a ticket for a cancelled event.
@@ -1412,51 +1547,9 @@ impl LumentixContract {
         from.require_auth();
 
         for ticket_id in ticket_ids.iter() {
-            // Read the ticket
             let mut ticket = storage::get_ticket(&env, ticket_id)?;
-
-            // Verify the caller is the current owner
-            if ticket.owner != from {
-                return Err(LumentixError::Unauthorized);
-            }
-
-            if ticket.revoked {
-                return Err(LumentixError::RevokedTicket);
-            }
-
-            // Verify ticket is not used
-            if ticket.used {
-                return Err(LumentixError::TicketAlreadyUsed);
-            }
-
-            // Verify ticket is not refunded
-            if ticket.refunded {
-                return Err(LumentixError::RefundNotAllowed);
-            }
-
-            // Read the event and verify it's published
-            let event = storage::get_event(&env, ticket.event_id)?;
-            if event.status != EventStatus::Published {
-                return Err(LumentixError::InvalidStatusTransition);
-            }
-
-            // Update ticket owner
-            ticket.owner = to.clone();
-            storage::set_ticket(&env, ticket_id, &ticket);
-
-            // Record transfer in history
-            storage::append_ticket_transfer_history(
-                &env,
-                ticket_id,
-                TicketTransferRecord {
-                    from: from.clone(),
-                    to: to.clone(),
-                    timestamp: env.ledger().timestamp(),
-                },
-            );
-
-            // Emit TicketTransferred event
-            TicketTransferred::emit(&env, ticket_id, ticket.event_id, from.clone(), to.clone());
+            Self::validate_ticket_transfer(&env, &ticket, &from, true)?;
+            Self::persist_ticket_transfer(&env, ticket_id, &mut ticket, from.clone(), to.clone());
         }
 
         // Resolves Issue #546
@@ -5031,5 +5124,65 @@ impl LumentixContract {
         UserJourneyOptimized::emit(&env, user, journey_steps.len(), env.ledger().timestamp());
 
         Ok(())
+    }
+
+    fn is_transfer_blackout_active_for_event(env: &Env, event_id: u64) -> bool {
+        if let Some(blackout) = storage::get_transfer_blackout(env, event_id) {
+            let now = env.ledger().timestamp();
+            return now >= blackout.starts_at && now <= blackout.ends_at;
+        }
+        false
+    }
+
+    fn validate_ticket_transfer(
+        env: &Env,
+        ticket: &Ticket,
+        from: &Address,
+        enforce_blackout: bool,
+    ) -> Result<(), LumentixError> {
+        if ticket.owner != from.clone() {
+            return Err(LumentixError::Unauthorized);
+        }
+        if ticket.revoked {
+            return Err(LumentixError::RevokedTicket);
+        }
+        if ticket.used {
+            return Err(LumentixError::TicketAlreadyUsed);
+        }
+        if ticket.refunded {
+            return Err(LumentixError::RefundNotAllowed);
+        }
+
+        let event = storage::get_event(env, ticket.event_id)?;
+        if event.status != EventStatus::Published {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+        if enforce_blackout && Self::is_transfer_blackout_active_for_event(env, ticket.event_id) {
+            return Err(LumentixError::TransferBlackoutActive);
+        }
+
+        Ok(())
+    }
+
+    fn persist_ticket_transfer(
+        env: &Env,
+        ticket_id: u64,
+        ticket: &mut Ticket,
+        from: Address,
+        to: Address,
+    ) {
+        let event_id = ticket.event_id;
+        ticket.owner = to.clone();
+        storage::set_ticket(env, ticket_id, ticket);
+        storage::append_ticket_transfer_history(
+            env,
+            ticket_id,
+            TicketTransferRecord {
+                from: from.clone(),
+                to: to.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        TicketTransferred::emit(env, ticket_id, event_id, from, to);
     }
 }

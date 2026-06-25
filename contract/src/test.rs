@@ -4249,6 +4249,100 @@ fn test_batch_transfer_tickets_require_auth_once_for_sender() {
     assert_eq!(*addr, buyer_a);
 }
 
+#[test]
+fn test_transfer_ticket_blocked_during_blackout_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    client.set_transfer_blackout(&organizer, &event_id, &0u64, &100u64);
+
+    let ticket_id = client.purchase_ticket(&owner, &event_id, &100i128);
+    assert!(client.is_transfer_blackout_active(&event_id));
+
+    let result = client.try_transfer_ticket(&ticket_id, &owner, &recipient);
+    assert_eq!(result, Err(Ok(LumentixError::TransferBlackoutActive)));
+}
+
+#[test]
+fn test_bypass_transfer_lock_allows_override_during_blackout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    client.set_transfer_blackout(&organizer, &event_id, &0u64, &100u64);
+
+    let ticket_id = client.purchase_ticket(&owner, &event_id, &100i128);
+    client.bypass_transfer_lock(&organizer, &ticket_id, &owner, &recipient);
+
+    let ticket = client.get_ticket_info(&ticket_id);
+    assert_eq!(ticket.owner, recipient);
+}
+
+#[test]
+fn test_referral_flow_tracks_discount_and_reward_credit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let referrer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    let link_code = String::from_str(&env, "summer-share");
+    let generated = client.generate_referral_link(&referrer, &event_id, &link_code);
+    assert_eq!(generated, link_code);
+
+    let (discounted_price, reward_amount) =
+        client.process_referred_purchase(&buyer, &event_id, &generated);
+    assert_eq!(discounted_price, 95i128);
+    assert_eq!(reward_amount, 5i128);
+
+    let credited = client.credit_referral_rewards(&referrer, &event_id);
+    assert_eq!(credited, 5i128);
+}
+
+#[test]
+fn test_referral_purchase_rejects_self_referral_and_duplicate_buyer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let referrer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    let link_code = client.generate_referral_link(
+        &referrer,
+        &event_id,
+        &String::from_str(&env, "friend-pass"),
+    );
+
+    let self_referral = client.try_process_referred_purchase(&referrer, &event_id, &link_code);
+    assert_eq!(self_referral, Err(Ok(LumentixError::SelfReferralNotAllowed)));
+
+    let first = client.try_process_referred_purchase(&buyer, &event_id, &link_code);
+    assert!(first.is_ok());
+
+    let duplicate = client.try_process_referred_purchase(&buyer, &event_id, &link_code);
+    assert_eq!(
+        duplicate,
+        Err(Ok(LumentixError::ReferralPurchaseAlreadyProcessed))
+    );
+}
+
 // ============================================================================
 // TOKEN CONFIGURATION TESTS
 // ============================================================================

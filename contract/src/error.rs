@@ -264,4 +264,14 @@ pub enum LumentixError {
     // Security Monitoring errors (108–110)
     /// Security incident not found
     SecurityIncidentNotFound = 108,
+    /// Ticket transfers are currently locked by an organizer-defined blackout window
+    TransferBlackoutActive = 109,
+    /// Referral link code is already claimed by another referrer
+    ReferralLinkAlreadyExists = 110,
+    /// Referral link does not exist for the requested event
+    ReferralLinkNotFound = 111,
+    /// Referral purchase has already been processed for this buyer
+    ReferralPurchaseAlreadyProcessed = 112,
+    /// Referrers cannot refer themselves
+    SelfReferralNotAllowed = 113,
 }

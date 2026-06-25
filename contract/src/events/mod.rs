@@ -255,6 +255,82 @@ impl BatchTicketsTransferred {
     }
 }
 
+/// Event emitted when organizers update a transfer blackout window.
+pub struct TransferBlackoutUpdated;
+
+impl TransferBlackoutUpdated {
+    pub fn emit(
+        env: &Env,
+        event_id: u64,
+        organizer: Address,
+        starts_at: u64,
+        ends_at: u64,
+    ) {
+        env.events().publish(
+            (symbol_short!("txblack"),),
+            (event_id, organizer, starts_at, ends_at),
+        );
+    }
+}
+
+/// Event emitted when an organizer or admin overrides a transfer lock.
+pub struct TransferLockBypassed;
+
+impl TransferLockBypassed {
+    pub fn emit(
+        env: &Env,
+        event_id: u64,
+        ticket_id: u64,
+        operator: Address,
+        from: Address,
+        to: Address,
+    ) {
+        env.events().publish(
+            (symbol_short!("txbypass"),),
+            (event_id, ticket_id, operator, from, to),
+        );
+    }
+}
+
+/// Event emitted when a referral link is generated for an event.
+pub struct ReferralLinkGenerated;
+
+impl ReferralLinkGenerated {
+    pub fn emit(env: &Env, event_id: u64, referrer: Address, link_code: String) {
+        env.events()
+            .publish((symbol_short!("reflink"),), (event_id, referrer, link_code));
+    }
+}
+
+/// Event emitted when a referred purchase is processed.
+pub struct ReferralPurchaseProcessed;
+
+impl ReferralPurchaseProcessed {
+    pub fn emit(
+        env: &Env,
+        event_id: u64,
+        referrer: Address,
+        buyer: Address,
+        discounted_price: i128,
+        reward_amount: i128,
+    ) {
+        env.events().publish(
+            (symbol_short!("refproc"),),
+            (event_id, referrer, buyer, discounted_price, reward_amount),
+        );
+    }
+}
+
+/// Event emitted when pending referral rewards are credited to the referrer ledger state.
+pub struct ReferralRewardsCredited;
+
+impl ReferralRewardsCredited {
+    pub fn emit(env: &Env, event_id: u64, referrer: Address, amount: i128) {
+        env.events()
+            .publish((symbol_short!("refcredit"),), (event_id, referrer, amount));
+    }
+}
+
 /// Event emitted when a ticket is marked as used (checked in)
 pub struct TicketUsed;
 

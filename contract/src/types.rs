@@ -65,6 +65,25 @@ pub struct TicketTransferRecord {
     pub timestamp: u64,
 }
 
+/// Organizer-defined transfer lock window for an event.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferBlackout {
+    pub starts_at: u64,
+    pub ends_at: u64,
+}
+
+/// Tracks referral link ownership and reward accrual for a single event.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferralLinkRecord {
+    pub link_code: String,
+    pub successful_purchases: u32,
+    pub pending_rewards: i128,
+    pub total_rewards_paid: i128,
+    pub total_discount_awarded: i128,
+}
+
 /// Fee collected event for tracking platform fees
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
